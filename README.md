@@ -282,6 +282,51 @@ python commodities_data_generator.py \
 | `--yahoo_refresh_secs` | 300 | Yahoo refresh interval (real-time) |
 | `--eia_api_key` | None | EIA API key ([register here](https://www.eia.gov/opendata/register.php)) |
 
+## Grafana Dashboard
+
+A ready-to-import Grafana dashboard is included at `Commodities-Orderbook-Realtime-Demo.json`. It uses the QuestDB datasource plugin (`questdb-questdb-datasource`) and connects via PG wire on port 8812. On import, Grafana will prompt you to select your QuestDB datasource.
+
+![Commodities Dashboard](assets/grafana-dashboard.png)
+
+### Panels
+
+**Term Structure & Cross-Commodity** (top row, no symbol filter)
+
+| Panel | Description |
+|-------|-------------|
+| Contango / Backwardation | Front month minus deferred month mid-price for CL vs CL12 (WTI Crude) and NG vs NG12 (Natural Gas). Positive values indicate backwardation (near-term premium), negative indicates contango. Uses ASOF JOIN on `commodities_bbo_1s`. |
+| Live Movers | All 25 commodities ranked by most volatile in the last 10 seconds. Shows current mid-price and percentage change over 10s, 1m, and 5m horizons with color-coded gauge bars (green = up, red = down). Sorted by `abs(chg_10s)`. |
+
+**Market Depth** (Plotly order book visualization)
+
+| Panel | Description |
+|-------|-------------|
+| Market Depth | Interactive order book for the selected symbol. Green area = cumulative bid volume, red area = cumulative ask volume, white dotted line = mid-price, yellow dotted lines = top volume walls per segment. Uses `bids[][]` and `asks[][]` arrays with `array_cum_sum()`. |
+
+**Prices and Spread** (per-symbol row)
+
+| Panel | Description |
+|-------|-------------|
+| Spread and Volume | Rolling table of the last 6 seconds showing average bid-ask spread and aggregated bid/ask top-of-book volumes. Uses SAMPLE BY 1s on `commodities_market_data`. |
+| Trade Execution vs Orderbook | Pairs each trade with the most recent order book snapshot via ASOF JOIN. Shows trade price, BBO at the time, and slippage in basis points relative to mid-price. Positive slippage = adverse execution. |
+| OHLC - Bids - 1s | Candlestick chart of the best bid aggregated into 1-second bars with volume, plus a cumulative VWAP overlay line (yellow). |
+
+**Indicators** (per-symbol row)
+
+| Panel | Description |
+|-------|-------------|
+| VWAP / RSI / Bollinger | Multi-indicator candlestick chart using 15-minute OHLC bars from `commodities_trades_ohlcv_15m`. Overlays cumulative VWAP (from `commodities_trades_ohlcv_1m`), RSI-12h (from `commodities_bbo_1h`), and Bollinger Bands (20-period SMA +/- 2 standard deviations). |
+| Bid vs Ask Volume + BBO | Aggregated bid and ask top-of-book volumes over 30-second intervals (bar-like), with best bid, best ask, and mid-price from `commodities_bbo_1s` overlaid. |
+
+### Importing
+
+1. In Grafana, go to Dashboards > Import
+2. Upload `Commodities-Orderbook-Realtime-Demo.json`
+3. Select your QuestDB datasource when prompted
+4. The dashboard auto-refreshes at 250ms-1s and uses a symbol dropdown (defaults to CL)
+
+Requires the [Plotly panel plugin](https://grafana.com/grafana/plugins/ae3e-plotly-panel/) for the Market Depth chart.
+
 ## Dependencies
 
 ```

@@ -1,0 +1,705 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_QUESTDB",
+      "label": "QuestDB",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "questdb-questdb-datasource",
+      "pluginName": "QuestDB"
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Commodities Orderbook Realtime Demo with Arrays",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 30,
+      "panels": [],
+      "title": "Term Structure & Cross-Commodity",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+      "description": "Contango/backwardation basis: front month mid-price minus deferred month mid-price for WTI Crude (CL vs CL12) and Natural Gas (NG vs NG12). Positive = backwardation (front premium), negative = contango (deferred premium).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": true, "axisColorMode": "text",
+            "axisLabel": "Basis (front - deferred)", "axisPlacement": "auto",
+            "barAlignment": 0, "barWidthFactor": 0.6,
+            "drawStyle": "line", "fillOpacity": 15, "gradientMode": "scheme",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "smooth", "lineWidth": 2,
+            "pointSize": 3, "scaleDistribution": { "type": "linear" },
+            "showPoints": "never", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green" }, { "color": "red", "value": 80 } ] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "CL_basis" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "semi-dark-orange", "mode": "fixed" } },
+              { "id": "unit", "value": "currencyUSD" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "NG_basis" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "semi-dark-blue", "mode": "fixed" } },
+              { "id": "unit", "value": "currencyUSD" },
+              { "id": "custom.axisPlacement", "value": "right" }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 13, "x": 0, "y": 1 },
+      "id": 31,
+      "options": {
+        "legend": { "calcs": ["last", "min", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "none" }
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+          "format": 1,
+          "meta": { "builderOptions": { "fields": [], "limit": "", "mode": "list", "timeField": "" } },
+          "queryType": "sql",
+          "rawSql": "WITH cl AS (\n  SELECT timestamp, (best_bid + best_ask)/2 as mid\n  FROM commodities_bbo_1s\n  WHERE symbol = 'CL' AND $__timeFilter(timestamp)\n), cl12 AS (\n  SELECT timestamp, (best_bid + best_ask)/2 as mid\n  FROM commodities_bbo_1s\n  WHERE symbol = 'CL12' AND $__timeFilter(timestamp)\n)\nSELECT cl.timestamp as time, cl.mid - cl12.mid as CL_basis\nFROM cl ASOF JOIN cl12\n",
+          "refId": "CL",
+          "selectedFormat": 2
+        },
+        {
+          "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+          "format": 1,
+          "hide": false,
+          "meta": { "builderOptions": { "fields": [], "limit": "", "mode": "list", "timeField": "" } },
+          "queryType": "sql",
+          "rawSql": "WITH ng AS (\n  SELECT timestamp, (best_bid + best_ask)/2 as mid\n  FROM commodities_bbo_1s\n  WHERE symbol = 'NG' AND $__timeFilter(timestamp)\n), ng12 AS (\n  SELECT timestamp, (best_bid + best_ask)/2 as mid\n  FROM commodities_bbo_1s\n  WHERE symbol = 'NG12' AND $__timeFilter(timestamp)\n)\nSELECT ng.timestamp as time, ng.mid - ng12.mid as NG_basis\nFROM ng ASOF JOIN ng12\n",
+          "refId": "NG",
+          "selectedFormat": 2
+        }
+      ],
+      "timeFrom": "30m",
+      "title": "Contango / Backwardation - CL & NG Term Structure",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+      "description": "Live price movers across all commodities. Shows current mid-price and percentage change over 10s, 1m, and 5m horizons. Gauge bars and color coding update on every refresh.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "text", "mode": "fixed" },
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false, "minWidth": 30 },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "text" } ] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "symbol" },
+            "properties": [
+              { "id": "custom.width", "value": 50 },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "color", "value": { "fixedColor": "white", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "class" },
+            "properties": [
+              { "id": "custom.width", "value": 55 },
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "mappings", "value": [
+                { "options": { "energy": { "color": "semi-dark-orange", "index": 0, "text": "Energy" } }, "type": "value" },
+                { "options": { "power": { "color": "semi-dark-yellow", "index": 1, "text": "Power" } }, "type": "value" },
+                { "options": { "metals": { "color": "semi-dark-blue", "index": 2, "text": "Metals" } }, "type": "value" },
+                { "options": { "ags": { "color": "semi-dark-green", "index": 3, "text": "Ags" } }, "type": "value" }
+              ]}
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "mid" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "color", "value": { "fixedColor": "light-blue", "mode": "fixed" } },
+              { "id": "decimals", "value": 2 },
+              { "id": "custom.width", "value": 75 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "chg_10s" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "mode": "gradient", "type": "gauge" } },
+              { "id": "unit", "value": "percent" },
+              { "id": "decimals", "value": 3 },
+              { "id": "min", "value": -0.5 },
+              { "id": "max", "value": 0.5 },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "dark-red", "value": null },
+                { "color": "red", "value": -0.1 },
+                { "color": "transparent", "value": -0.01 },
+                { "color": "green", "value": 0.01 },
+                { "color": "dark-green", "value": 0.1 }
+              ]}}
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "chg_1m" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "mode": "gradient", "type": "gauge" } },
+              { "id": "unit", "value": "percent" },
+              { "id": "decimals", "value": 3 },
+              { "id": "min", "value": -1 },
+              { "id": "max", "value": 1 },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "dark-red", "value": null },
+                { "color": "red", "value": -0.2 },
+                { "color": "transparent", "value": -0.02 },
+                { "color": "green", "value": 0.02 },
+                { "color": "dark-green", "value": 0.2 }
+              ]}}
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "chg_5m" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "mode": "gradient", "type": "gauge" } },
+              { "id": "unit", "value": "percent" },
+              { "id": "decimals", "value": 3 },
+              { "id": "min", "value": -3 },
+              { "id": "max", "value": 3 },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "dark-red", "value": null },
+                { "color": "red", "value": -0.5 },
+                { "color": "transparent", "value": -0.05 },
+                { "color": "green", "value": 0.05 },
+                { "color": "dark-green", "value": 0.5 }
+              ]}}
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 11, "x": 13, "y": 1 },
+      "id": 32,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [
+          { "desc": true, "displayName": "chg_10s" }
+        ]
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+          "format": 1,
+          "meta": { "builderOptions": { "fields": [], "limit": "", "mode": "list", "timeField": "" } },
+          "queryType": "sql",
+          "rawSql": "WITH now_price AS (\n  SELECT symbol, commodity_class, (best_bid + best_ask)/2 as mid\n  FROM commodities_market_data\n  WHERE timestamp > dateadd('s', -5, now())\n  LATEST ON timestamp PARTITION BY symbol\n), ago_10s AS (\n  SELECT symbol, (best_bid + best_ask)/2 as mid\n  FROM commodities_market_data\n  WHERE timestamp > dateadd('s', -15, now()) AND timestamp < dateadd('s', -8, now())\n  LATEST ON timestamp PARTITION BY symbol\n), ago_1m AS (\n  SELECT symbol, (best_bid + best_ask)/2 as mid\n  FROM commodities_market_data\n  WHERE timestamp > dateadd('m', -2, now()) AND timestamp < dateadd('s', -55, now())\n  LATEST ON timestamp PARTITION BY symbol\n), ago_5m AS (\n  SELECT symbol, (best_bid + best_ask)/2 as mid\n  FROM commodities_market_data\n  WHERE timestamp > dateadd('m', -6, now()) AND timestamp < dateadd('m', -4, now())\n  LATEST ON timestamp PARTITION BY symbol\n)\nSELECT n.symbol, n.commodity_class as class, n.mid,\n  (n.mid - t.mid) / t.mid * 100 as chg_10s,\n  (n.mid - m.mid) / m.mid * 100 as chg_1m,\n  (n.mid - f.mid) / f.mid * 100 as chg_5m\nFROM now_price n\nLEFT JOIN ago_10s t ON n.symbol = t.symbol\nLEFT JOIN ago_1m m ON n.symbol = m.symbol\nLEFT JOIN ago_5m f ON n.symbol = f.symbol\nORDER BY abs((n.mid - t.mid) / t.mid) DESC\n",
+          "refId": "A",
+          "selectedFormat": 1
+        }
+      ],
+      "title": "Live Movers - All Commodities",
+      "transparent": true,
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+      "description": "Visualizes the order book snapshot for the selected commodity, showing the price and cumulative volume at each bid and ask level. The area under the green (bids) and red (asks) lines represents market liquidity on both sides, with the mid-price and top volume walls highlighted.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 9 },
+      "hideTimeOverride": true,
+      "id": 27,
+      "maxPerRow": 2,
+      "options": {
+        "onclick": "console.log(data)\nwindow.updateVariables({query:{'var-project':'test'}, partial: true})",
+        "script": "function parseArray(val) {\n  if (Array.isArray(val)) return val;\n  if (typeof val === \"string\") {\n    return val.replace(/[{}]/g, \"\")\n      .split(\",\")\n      .filter(x => x.length > 0)\n      .map(Number);\n  }\n  return [];\n}\n\nconst NUM_SEGMENTS = 4;\nconst table = data.series[0];\nconst fields = table.fields;\n\nconst bprices = fields.find(f => f.name === \"bprices\");\nconst bcumvolumes = fields.find(f => f.name === \"bcumvolumes\");\nconst bvolumes = fields.find(f => f.name === \"bvolumes\");\nconst aprices = fields.find(f => f.name === \"aprices\");\nconst acumvolumes = fields.find(f => f.name === \"acumvolumes\");\nconst avolumes = fields.find(f => f.name === \"avolumes\");\n\nif (!bprices || !bcumvolumes || !aprices || !acumvolumes) {\n  throw new Error(\"Missing required array fields\");\n}\n\nconst bps = parseArray(bprices.values.get(0));\nconst bvs = parseArray(bcumvolumes.values.get(0));\nconst brs = bvolumes ? parseArray(bvolumes.values.get(0)) : [];\nconst aps = parseArray(aprices.values.get(0));\nconst avs = parseArray(acumvolumes.values.get(0));\nconst ars = avolumes ? parseArray(avolumes.values.get(0)) : [];\n\nconst bids = [];\nfor (let i = 0; i < Math.min(bps.length, bvs.length); i++) {\n  bids.push({ x: bps[i], y: bvs[i], raw: brs[i] ?? null });\n}\n\nconst asks = [];\nfor (let i = 0; i < Math.min(aps.length, avs.length); i++) {\n  asks.push({ x: aps[i], y: avs[i], raw: ars[i] ?? null });\n}\n\nbids.sort((a, b) => b.x - a.x);\nasks.sort((a, b) => a.x - b.x);\n\nconst bestBid = bids[0]?.x ?? 0;\nconst bestAsk = asks[0]?.x ?? 0;\nconst mid = (bestBid + bestAsk) / 2;\nif (bids.length > 0 && asks.length > 0) {\n  const bidY = bids[0].y;\n  const askY = asks[0].y;\n  const midY = Math.min(bidY, askY);\n  bids.unshift({ x: mid, y: midY });\n  asks.unshift({ x: mid, y: midY });\n  bids.push({ x: bids[bids.length - 1].x - 0.0001, y: 0 });\n  asks.push({ x: asks[asks.length - 1].x + 0.0001, y: 0 });\n}\n\nfunction segmentedWalls(levels, nSegments) {\n  const N = levels.length;\n  if (N === 0) return [];\n  const result = [];\n  const segSize = Math.floor(N / nSegments);\n  for (let seg = 0; seg < nSegments; seg++) {\n    const start = seg * segSize;\n    const end = seg === nSegments - 1 ? N : (seg + 1) * segSize;\n    let maxIdx = -1, maxRaw = -Infinity;\n    for (let i = start; i < end; i++) {\n      if (levels[i]?.raw !== undefined && levels[i].raw > maxRaw) {\n        maxRaw = levels[i].raw;\n        maxIdx = i;\n      }\n    }\n    if (maxIdx >= 0) result.push(levels[maxIdx]);\n  }\n  return result;\n}\n\nconst topBids = segmentedWalls(bids, NUM_SEGMENTS);\nconst topAsks = segmentedWalls(asks, NUM_SEGMENTS);\n\n// Dynamic precision based on price magnitude\nconst priceFmt = (p) => p >= 100 ? p.toFixed(2) : p >= 1 ? p.toFixed(4) : p.toPrecision(5);\n\nconst wallLines = [...topBids, ...topAsks].map(wall => ({\n  type: \"line\", x0: wall.x, x1: wall.x, y0: 0, y1: 1,\n  xref: \"x\", yref: \"paper\",\n  line: { color: \"yellow\", width: 1, dash: \"dot\" }\n}));\n\nconst wallLabels = [...topBids, ...topAsks].map(wall => ({\n  x: wall.x, y: 1.02, xref: \"x\", yref: \"paper\",\n  text: priceFmt(wall.x),\n  showarrow: false, font: { color: \"yellow\", size: 10 }\n}));\n\nconst minX = Math.min(...bids.map(b => b.x), ...asks.map(a => a.x), mid);\nconst maxX = Math.max(...bids.map(b => b.x), ...asks.map(a => a.x), mid);\nconst pad = (maxX - minX) * 0.01;\n\nreturn {\n  data: [\n    {\n      name: \"Bids\", x: bids.map(pt => pt.x), y: bids.map(pt => pt.y),\n      mode: \"lines\", fill: \"tozeroy\",\n      fillcolor: \"rgba(0,255,0,0.2)\",\n      line: { shape: \"hv\", color: \"rgba(0,255,0,0.7)\", width: 2 },\n      type: \"scatter\",\n      hovertemplate: \"Price: %{x}<br>CumVol: %{y}<extra></extra>\"\n    },\n    {\n      name: \"Asks\", x: asks.map(pt => pt.x), y: asks.map(pt => pt.y),\n      mode: \"lines\", fill: \"tozeroy\",\n      fillcolor: \"rgba(255,0,0,0.2)\",\n      line: { shape: \"hv\", color: \"rgba(255,0,0,0.7)\", width: 2 },\n      type: \"scatter\",\n      hovertemplate: \"Price: %{x}<br>CumVol: %{y}<extra></extra>\"\n    }\n  ],\n  layout: {\n    plot_bgcolor: \"black\", paper_bgcolor: \"black\",\n    font: { color: \"white\" },\n    xaxis: { title: \"Price\", type: \"linear\", showgrid: true, gridcolor: \"rgba(255,255,255,0.1)\", zeroline: false, range: [minX - pad, maxX + pad] },\n    yaxis: { title: \"Cumulative Volume (lots)\", type: \"log\", showgrid: true, gridcolor: \"rgba(255,255,255,0.1)\", zeroline: false },\n    margin: { t: 20, l: 40, r: 10, b: 30 },\n    shapes: [\n      { type: \"line\", x0: mid, x1: mid, y0: 0, y1: 1, xref: \"x\", yref: \"paper\", line: { color: \"white\", width: 1, dash: \"dot\" } },\n      ...wallLines\n    ],\n    annotations: wallLabels,\n    legend: { orientation: \"h\", x: 0.5, xanchor: \"center\", y: -0.3 }\n  }\n};"
+      },
+      "pluginVersion": "0.5.0",
+      "repeat": "SYMBOL",
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+          "format": 1,
+          "meta": { "builderOptions": { "fields": [], "limit": "", "mode": "list", "timeField": "" } },
+          "queryType": "sql",
+          "rawSql": "WITH snapshot AS (\n  SELECT timestamp, bids, asks\n  FROM commodities_market_data\n  WHERE $__timeFilter(timestamp) AND symbol = '${SYMBOL}'\n  ORDER BY timestamp DESC\n  LIMIT 1\n)\nSELECT timestamp, bids[1] as bprices, bids[2] as bvolumes, array_cum_sum(bids[2]) as bcumvolumes, asks[1] as aprices, asks[2] as avolumes, array_cum_sum(asks[2]) as acumvolumes FROM snapshot;\n",
+          "refId": "A",
+          "selectedFormat": 2
+        }
+      ],
+      "timeFrom": "10m",
+      "title": "Market Depth - ${SYMBOL}",
+      "type": "ae3e-plotly-panel"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 19 },
+      "id": 21,
+      "panels": [],
+      "repeat": "SYMBOL",
+      "title": "Prices and Spread",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+      "description": "Rolling table of the most recent seconds for the selected commodity, showing the current average spread and aggregated bid/ask volumes in lots.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "semi-dark-blue", "mode": "shades" },
+          "custom": { "align": "auto", "cellOptions": { "type": "color-background" }, "inspect": false, "minWidth": 50 },
+          "fieldMinMax": false,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green" },
+              { "color": "#6ED0E0", "value": 500 },
+              { "color": "#EAB839", "value": 2000 },
+              { "color": "red", "value": 5000 }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Time" },
+            "properties": [ { "id": "custom.width", "value": 150 } ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Spread" },
+            "properties": [
+              { "id": "color", "value": { "mode": "continuous-BlPu" } },
+              { "id": "custom.width", "value": 80 }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 20 },
+      "hideTimeOverride": true,
+      "id": 20,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "enablePagination": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "rawSql": "SELECT timestamp as Time, avg(best_ask - best_bid) as Spread, sum(bids[2,1]) as Bid_Volume, sum(asks[2,1]) as Ask_Volume\nFROM commodities_market_data\nWHERE $__timeFilter(timestamp) AND symbol = '${SYMBOL}'\nSAMPLE BY 1s\nORDER BY timestamp DESC\nLIMIT 6",
+          "refId": "A",
+          "selectedFormat": 2
+        }
+      ],
+      "timeFrom": "1m",
+      "timeShift": "5s",
+      "title": "Spread and Volume per second - ${SYMBOL}",
+      "transparent": true,
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+      "description": "Pairs each recent trade with the most recent order book snapshot via ASOF JOIN, showing trade execution quality: slippage in basis points relative to the mid-price, and whether the trade was inside or outside the spread.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "light-blue", "mode": "shades" },
+          "custom": { "align": "auto", "cellOptions": { "type": "color-background" }, "inspect": false, "minWidth": 40 },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green" },
+              { "color": "red", "value": 80 }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Time" },
+            "properties": [ { "id": "custom.width", "value": 150 } ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Slippage_BPS" },
+            "properties": [
+              { "id": "color", "value": { "mode": "continuous-BlPu" } },
+              { "id": "custom.width", "value": 90 },
+              { "id": "decimals", "value": 2 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Side" },
+            "properties": [ { "id": "custom.width", "value": 30 } ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Size" },
+            "properties": [ { "id": "custom.width", "value": 45 } ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Trade_Price" },
+            "properties": [ { "id": "custom.width", "value": 75 } ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Bid" },
+            "properties": [ { "id": "custom.width", "value": 60 } ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Ask" },
+            "properties": [ { "id": "custom.width", "value": 60 } ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Mid" },
+            "properties": [ { "id": "custom.width", "value": 60 } ]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 7, "x": 6, "y": 20 },
+      "hideTimeOverride": true,
+      "id": 19,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+          "format": 1,
+          "meta": { "builderOptions": { "fields": [], "limit": "", "mode": "list", "timeField": "" } },
+          "queryType": "sql",
+          "rawSql": "SELECT t.timestamp as Time, t.side as Side, t.price as Trade_Price, t.size as Size,\n  m.best_bid as Bid, m.best_ask as Ask,\n  (m.best_bid + m.best_ask)/2 as Mid,\n  CASE t.side\n    WHEN 'B' THEN (t.price - (m.best_bid + m.best_ask)/2) / ((m.best_bid + m.best_ask)/2) * 10000\n    WHEN 'S' THEN ((m.best_bid + m.best_ask)/2 - t.price) / ((m.best_bid + m.best_ask)/2) * 10000\n  END as Slippage_BPS\nFROM commodities_trades t\nASOF JOIN commodities_market_data m ON (symbol)\nWHERE $__timeFilter(t.timestamp) AND t.symbol = '${SYMBOL}'\nORDER BY t.timestamp DESC\nLIMIT 8",
+          "refId": "A",
+          "selectedFormat": 1
+        }
+      ],
+      "timeFrom": "1m",
+      "title": "Trade Execution vs Orderbook - ${SYMBOL}",
+      "transparent": true,
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+      "description": "Candlestick chart of the best bid from the order book, aggregated into 1-second intervals with volume.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "barWidthFactor": 0.6,
+            "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineStyle": { "fill": "solid" },
+            "lineWidth": 1, "pointSize": 3, "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green" }, { "color": "red", "value": 80 } ] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byFrameRefID", "options": "VWAP" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } },
+              { "id": "custom.lineWidth", "value": 2 },
+              { "id": "custom.fillOpacity", "value": 0 },
+              { "id": "custom.showPoints", "value": "never" }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 11, "x": 13, "y": 20 },
+      "id": 13,
+      "options": {
+        "candleStyle": "candles",
+        "colorStrategy": "close-close",
+        "colors": { "down": "light-blue", "up": "semi-dark-purple" },
+        "fields": { "close": "close", "high": "high", "low": "low", "open": "open", "volume": "total_volume" },
+        "includeAllFields": true,
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "mode": "candles+volume",
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "none" }
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+          "editorMode": "code",
+          "format": 1,
+          "rawQuery": true,
+          "rawSql": "SELECT timestamp, first(bids[1,1]) open, max(bids[1,1]) high,\nmin(bids[1,1]) low, last(bids[1,1]) close, sum(bids[2,1]) total_volume\nFROM commodities_market_data\nWHERE $__timeFilter(timestamp) AND symbol = '${SYMBOL}'\nSAMPLE BY 1s\n",
+          "refId": "A",
+          "selectedFormat": 2
+        },
+        {
+          "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+          "editorMode": "code",
+          "format": 1,
+          "hide": false,
+          "rawQuery": true,
+          "rawSql": "WITH sampled AS (\n  SELECT timestamp,\n    last(bids[1,1]) as price,\n    sum(bids[2,1]) as vol\n  FROM commodities_market_data\n  WHERE $__timeFilter(timestamp) AND symbol = '${SYMBOL}'\n  SAMPLE BY 1s\n)\nSELECT timestamp,\n  SUM(price * vol) OVER (ORDER BY timestamp) /\n  SUM(vol) OVER (ORDER BY timestamp) AS VWAP\nFROM sampled\n",
+          "refId": "VWAP",
+          "selectedFormat": 2
+        }
+      ],
+      "timeFrom": "1m",
+      "title": "OHLC - Bids - 1s - (${SYMBOL})",
+      "transparent": true,
+      "type": "candlestick"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 28 },
+      "id": 23,
+      "panels": [],
+      "repeat": "SYMBOL",
+      "title": "Indicators",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+      "description": "Multi-layered chart combining VWAP, RSI (12h), and Bollinger Bands (20,2) overlaid on OHLC candles from the trades table. Each Bollinger period is 15 minutes, so the SMA covers a 5-hour window.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "barWidthFactor": 0.6,
+            "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green" }, { "color": "red", "value": 80 } ] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byFrameRefID", "options": "RSI" },
+            "properties": [
+              { "id": "unit", "value": "RSI %" },
+              { "id": "custom.axisPlacement", "value": "auto" },
+              { "id": "custom.axisSoftMax", "value": 100 }
+            ]
+          },
+          {
+            "matcher": { "id": "byFrameRefID", "options": "Bollinger" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "light-blue", "mode": "palette-classic-by-name" } },
+              { "id": "custom.showPoints", "value": "always" }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 7, "w": 13, "x": 0, "y": 29 },
+      "hideTimeOverride": false,
+      "id": 11,
+      "options": {
+        "candleStyle": "candles",
+        "colorStrategy": "open-close",
+        "colors": { "down": "light-blue", "up": "semi-dark-purple" },
+        "fields": { "close": "close", "high": "high", "low": "low", "open": "open", "volume": "volume" },
+        "includeAllFields": true,
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "mode": "candles+volume",
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "none" }
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+          "format": 1,
+          "meta": { "builderOptions": { "fields": [], "limit": "", "mode": "list", "timeField": "" } },
+          "queryType": "sql",
+          "rawSql": "WITH sampled AS (\n    SELECT timestamp, symbol, volume,\n          ((open+close)/2) * volume AS traded_value\n    FROM commodities_trades_ohlcv_1m\n    WHERE $__timeFilter(timestamp) AND symbol IN '${SYMBOL}'\n), cumulative AS (\n    SELECT timestamp, symbol,\n          SUM(traded_value) OVER (ORDER BY timestamp) AS cumulative_value,\n          SUM(volume) OVER (ORDER BY timestamp) AS cumulative_volume\n    FROM sampled\n)\nSELECT timestamp, cumulative_value/cumulative_volume AS vwap FROM cumulative\n",
+          "refId": "VWAP",
+          "selectedFormat": 2
+        },
+        {
+          "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+          "format": 1,
+          "hide": false,
+          "meta": { "builderOptions": { "fields": [], "limit": "", "mode": "list", "timeField": "" } },
+          "queryType": "sql",
+          "rawSql": "SELECT timestamp, open, high, low, close, volume\nFROM commodities_trades_ohlcv_15m\nWHERE $__timeFilter(timestamp) AND symbol = '${SYMBOL}'\n",
+          "refId": "OHLC",
+          "selectedFormat": 2
+        },
+        {
+          "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+          "format": 1,
+          "hide": false,
+          "meta": { "builderOptions": { "fields": [], "limit": "", "mode": "list", "timeField": "" } },
+          "queryType": "sql",
+          "rawSql": "WITH price_changes AS (\n    SELECT timestamp, symbol, max_bid,\n        max_bid - prev_bid price_change\n    FROM (\n      SELECT timestamp, symbol, max_bid,\n          LAG(max_bid) OVER (PARTITION BY symbol ORDER BY timestamp) AS prev_bid\n      FROM commodities_bbo_1h\n      WHERE $__timeFilter(timestamp) AND symbol = '${SYMBOL}'\n    )\n),\ngains_losses AS (\n    SELECT timestamp, symbol, max_bid,\n        CASE WHEN price_change > 0 THEN price_change ELSE 0 END AS gain,\n        CASE WHEN price_change < 0 THEN ABS(price_change) ELSE 0 END AS loss\n    FROM price_changes\n),\navg_gains_losses AS (\n    SELECT timestamp, symbol, max_bid,\n        AVG(gain) OVER (PARTITION BY symbol ORDER BY timestamp ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS avg_gain,\n        AVG(loss) OVER (PARTITION BY symbol ORDER BY timestamp ROWS BETWEEN 11 PRECEDING AND CURRENT ROW) AS avg_loss\n    FROM gains_losses\n)\nSELECT timestamp, max_bid as Bid,\n    CASE\n        WHEN avg_loss = 0 THEN 100\n        ELSE 100 - (100 / (1 + (avg_gain / NULLIF(avg_loss, 0))))\n    END AS RSI_12h\nFROM avg_gains_losses\nORDER BY timestamp\n",
+          "refId": "RSI",
+          "selectedFormat": 2
+        },
+        {
+          "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+          "format": 1,
+          "hide": false,
+          "meta": { "builderOptions": { "fields": [], "limit": "", "mode": "list", "timeField": "" } },
+          "queryType": "sql",
+          "rawSql": "WITH stats AS (\n  SELECT timestamp, close,\n    AVG(close) OVER (ORDER BY timestamp ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS sma20,\n    AVG(close * close) OVER (ORDER BY timestamp ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS avg_close_sq\n  FROM commodities_trades_ohlcv_15m\n  WHERE $__timeFilter(timestamp) AND symbol IN '${SYMBOL}'\n)\nSELECT timestamp, sma20,\n  sma20 + 2 * sqrt(avg_close_sq - (sma20 * sma20)) as upper_band,\n  sma20 - 2 * sqrt(avg_close_sq - (sma20 * sma20)) as lower_band\nFROM stats\nORDER BY timestamp\n",
+          "refId": "Bollinger",
+          "selectedFormat": 2
+        }
+      ],
+      "timeFrom": "now/d",
+      "title": "VWAP - RSI 12h - Bollinger Bands (20,2) - (${SYMBOL})",
+      "type": "candlestick"
+    },
+    {
+      "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+      "description": "Time series chart comparing aggregated bid and ask volumes over 30-second intervals, alongside the best bid/offer at 1-second granularity.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text",
+            "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "barWidthFactor": 0.6,
+            "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "decimals": 2,
+          "fieldMinMax": false,
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green" }, { "color": "red", "value": 80 } ] },
+          "unit": "currencyUSD"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "best_bid" },
+            "properties": [ { "id": "color", "value": { "fixedColor": "semi-dark-purple", "mode": "fixed" } } ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "best_ask" },
+            "properties": [ { "id": "color", "value": { "fixedColor": "light-blue", "mode": "fixed" } } ]
+          },
+          {
+            "matcher": { "id": "byFrameRefID", "options": "Volume" },
+            "properties": [ { "id": "unit", "value": "short" } ]
+          },
+          {
+            "matcher": { "id": "byFrameRefID", "options": "BBO" },
+            "properties": [
+              { "id": "unit", "value": "currencyUSD" },
+              { "id": "color", "value": { "mode": "palette-classic-by-name" } }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 7, "w": 11, "x": 13, "y": 29 },
+      "id": 26,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "none" }
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+          "format": 1,
+          "meta": { "builderOptions": { "fields": [], "limit": "", "mode": "list", "timeField": "" } },
+          "queryType": "sql",
+          "rawSql": "SELECT timestamp time, symbol, sum(bids[2,1]) as bid_vol, -1 * sum(asks[2,1]) as ask_vol\nFROM commodities_market_data\nWHERE $__timeFilter(timestamp) AND symbol IN '${SYMBOL}'\nSAMPLE BY 30s\n",
+          "refId": "Volume",
+          "selectedFormat": 2
+        },
+        {
+          "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+          "format": 0,
+          "hide": false,
+          "meta": { "builderOptions": { "fields": [], "limit": "", "mode": "list", "timeField": "" } },
+          "queryType": "sql",
+          "rawSql": "SELECT timestamp as Time, symbol, best_bid, best_ask, (best_bid + best_ask)/2 as Mid\nFROM commodities_bbo_1s\nWHERE $__timeFilter(timestamp) AND symbol IN '${SYMBOL}'\n",
+          "refId": "BBO",
+          "selectedFormat": 2
+        }
+      ],
+      "timeFrom": "30m",
+      "title": "Bid vs Ask Volume (30s) - BBO (1s) - (${SYMBOL})",
+      "type": "timeseries"
+    }
+  ],
+  "preload": false,
+  "refresh": "1s",
+  "schemaVersion": 41,
+  "tags": ["commodities", "questdb"],
+  "templating": {
+    "list": [
+      {
+        "allowCustomValue": false,
+        "current": {
+          "text": ["CL"],
+          "value": ["CL"]
+        },
+        "datasource": { "type": "questdb-questdb-datasource", "uid": "${DS_QUESTDB}" },
+        "definition": "SELECT distinct SYMBOL FROM (\nSELECT SYMBOL FROM commodities_market_data\nWHERE timestamp > dateadd('d',-4,now())\nLATEST ON timestamp PARTITION BY symbol\n) ORDER BY symbol;\n",
+        "description": "Commodity symbol to filter by",
+        "hide": 1,
+        "includeAll": false,
+        "label": "symbol",
+        "multi": true,
+        "name": "SYMBOL",
+        "options": [],
+        "query": "SELECT distinct SYMBOL FROM (\nSELECT SYMBOL FROM commodities_market_data\nWHERE timestamp > dateadd('d',-4,now())\nLATEST ON timestamp PARTITION BY symbol\n) ORDER BY symbol;\n",
+        "refresh": 1,
+        "regex": "",
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "250ms", "500ms", "1s", "2s", "5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"
+    ]
+  },
+  "timezone": "browser",
+  "title": "Commodities Orderbook - Realtime Demo",
+  "uid": null,
+  "version": 1
+}
