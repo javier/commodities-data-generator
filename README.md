@@ -229,17 +229,28 @@ python commodities_data_generator.py \
 ## Command-Line Arguments
 
 ### Connection
+
+The generator speaks [QWP](https://questdb.com/docs/connect/wire-protocols/overview/)
+(QuestDB Wire Protocol) over WebSocket for **both SQL and writes**, through a
+single `questdb.QuestDB` handle. There is no PG wire connection and no separate
+ILP sender, so one endpoint (port 9000) and one credential cover DDL, metadata
+probes and row ingestion alike.
+
+This requires `questdb>=5.0.0` (Python 3.10+) and a QWP-capable QuestDB server.
+
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--host` | 127.0.0.1 | QuestDB host |
-| `--pg_port` | 8812 | PG wire port |
-| `--user` | admin | PG user |
-| `--password` | quest | PG password |
-| `--token` | None | ILP auth token |
-| `--token_x` | None | ILP token X |
-| `--token_y` | None | ILP token Y |
-| `--ilp_user` | admin | ILP username |
-| `--protocol` | http | http or tcp |
+| `--host` | 127.0.0.1 | QWP host, or a comma-separated list for HA failover. Entries without a port default to 9000. List the writable primary first. |
+| `--user` | admin | Username for basic auth |
+| `--password` | quest | Password for basic auth |
+| `--token` | None | Bearer token. Takes precedence over `--user`/`--password`. |
+| `--token_file` | None | Read the bearer token from a file, keeping it off the command line |
+| `--qwp_tls` | false | Use `wss` instead of `ws` |
+| `--tls_ca` | None | TLS root store: `os_roots`, `webpki_roots`, or a CA bundle path |
+| `--tls_verify` | on | Set `unsafe_off` for a cluster with a **self-signed** certificate. No `--tls_ca` value can validate one, since it chains to no trusted root |
+| `--durable_ack` | false | `request_durable_ack=on`, so a failover cannot lose acknowledged rows |
+| `--store_forward_dir` | `<tmp>/commodities_qwp_sf` | Base dir for per-worker store-and-forward spill; each worker gets a `<dir>/commodities-<idx>` subdir, created if absent |
+| `--enterprise` | false | Enterprise server: tables take a `STORAGE POLICY` instead of a `TTL` |
 
 ### Mode & Rates
 | Argument | Default | Description |
@@ -266,8 +277,34 @@ python commodities_data_generator.py \
 | `--min_levels` | 20 | Min order book depth |
 | `--max_levels` | 20 | Max order book depth |
 | `--create_views` | true | Create materialized views |
-| `--short_ttl` | false | Enable short TTLs on views |
+| `--short_ttl` | false | Enable short retention (see below) |
 | `--prefix` | "" | Table name prefix |
+
+#### Retention
+
+`--short_ttl` applies retention, but the clause differs by edition and object
+kind, because QuestDB accepts different things in each case:
+
+| | `TTL` | `STORAGE POLICY` |
+|---|---|---|
+| Table (OSS) | yes | n/a |
+| Table (Enterprise) | rejected on `ALTER` | yes |
+| Materialized view (either) | yes | rejected |
+
+So with `--short_ttl true`, tables get `TTL 3 DAYS` / `TTL 1 MONTH` on OSS and a
+`STORAGE POLICY` on Enterprise (`--enterprise true`), while materialized views
+always get a TTL. The Enterprise policy is:
+
+```
+TO REMOTE 1 hour, TO PARQUET 2 days, DROP LOCAL 3 months
+```
+
+`DROP LOCAL` must never appear without a remote tier ahead of it, or it is simply
+deletion.
+
+**Do not pass `--short_ttl` when loading a demo dataset for dates in the past.**
+Every threshold is already exceeded the moment the data lands. Without the flag
+no retention clause is emitted at all and the data simply persists.
 
 ### Session
 | Argument | Default | Description |
@@ -330,9 +367,15 @@ Requires the [Plotly panel plugin](https://grafana.com/grafana/plugins/ae3e-plot
 ## Dependencies
 
 ```
-questdb[dataframe]==4.0.0
-psycopg[binary]==3.2.6
-numpy==2.0.2
+questdb[dataframe]==5.0.0
+numpy>=2.0.2
 yfinance==0.2.65
 requests==2.32.3
 ```
+
+`psycopg` is no longer needed: QWP replaced the PG wire connection. `questdb`
+5.x requires Python 3.10 or newer.
+
+Note that the Grafana QuestDB datasource plugin still connects over PG wire on
+port 8812 — it has no QWP path — so that port stays open for dashboards even
+though the generator no longer uses it.

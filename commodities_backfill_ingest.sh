@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
+#
+# Faster-than-life commodities backfill over QWP/WebSocket.
+#
+# Same transport notes as commodities_real_time_ingest.sh: one endpoint on port
+# 9000, bearer token via --token_file, primary listed first in --host.
+set -euo pipefail
+
 python commodities_data_generator.py \
-  --host REPLACE_ME_host \
-  --token "REPLACE_ME_token" \
-  --token_x "REPLACE_ME_token_x" \
-  --token_y "REPLACE_ME_token_y" \
-  --ilp_user ilp_ingest \
-  --protocol tcp \
+  --host REPLACE_ME_host:9000 \
+  --token_file "$HOME/qwp_token.txt" \
+  --qwp_tls true \
+  --durable_ack true \
+  --enterprise true \
   --mode faster-than-life \
   --processes 6 \
   --scale_factor 50 \

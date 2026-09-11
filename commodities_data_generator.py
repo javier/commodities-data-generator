@@ -15,12 +15,20 @@
 # - Session pacing (NYMEX/COMEX/CBOT/ICE hours)
 # - WAL lag monitor pauses and resumes ingestion
 # - Yahoo seeding for 19 symbols, EIA API for 4 power hubs
+#
+# Transport: QWP (QuestDB Wire Protocol) over WebSocket, for both SQL and writes.
+# A single questdb.QuestDB handle replaces the previous psycopg (PG wire, 8812)
+# plus questdb.ingress.Sender (ILP, 9000/9009) pairing, so DDL, metadata probes
+# and row ingestion all share one client library, one port and one credential.
+# Requires questdb>=5.0.0 (Python 3.10+) and a QWP-capable QuestDB server.
 
 
 import argparse
 import datetime
 import math
+import os
 import random
+import tempfile
 import time
 import sys
 import multiprocessing as mp
@@ -29,10 +37,10 @@ from zoneinfo import ZoneInfo
 from typing import Optional
 
 import numpy as np
-import psycopg as pg
 import requests
 import yfinance as yf
-from questdb.ingress import Sender, TimestampNanos
+import questdb
+from questdb import QuestDBError, TimestampNanos
 
 
 # ----------------------------
@@ -163,17 +171,100 @@ def table_name(name: str, prefix: str) -> str:
 
 
 # ----------------------------
+# QWP connection
+# ----------------------------
+
+# Retention differs by edition and by object kind, verified against QuestDB
+# Enterprise: ALTER TABLE ... SET TTL is rejected on Enterprise ("use a storage
+# policy instead"), and STORAGE POLICY is rejected on materialized views
+# ("storage policy is not supported for materialized views"). So tables take a
+# storage policy on Enterprise and a TTL on OSS, while views always take a TTL.
+#
+# DROP LOCAL must never run without a remote tier ahead of it, or it is simply
+# deletion. These mirror the policy the FX generator already runs in production.
+MD_ENTERPRISE_POLICY = "TO REMOTE 1 hour, TO PARQUET 2 days, DROP LOCAL 3 months"
+TR_ENTERPRISE_POLICY = "TO REMOTE 1 hour, TO PARQUET 2 days, DROP LOCAL 3 months"
+
+
+def table_retention(short_ttl: bool, enterprise: bool, oss_ttl: str, policy: str) -> str:
+    if not short_ttl:
+        return ""
+    if enterprise:
+        return f" STORAGE POLICY({policy})"
+    return f" TTL {oss_ttl}"
+
+
+def view_retention(short_ttl: bool, oss_ttl: str) -> str:
+    # Materialized views take a TTL on both editions; storage policies are rejected.
+    return f" TTL {oss_ttl}" if short_ttl else ""
+
+
+def qwp_addr_list(host: str, default_port: int = 9000) -> str:
+    """Build a QWP addr= value from --host, supporting multi-host HA failover.
+
+    Accepts "h1", "h1:9000" or a comma-separated list of either. Any entry
+    without an explicit port gets default_port. The client rotates across the
+    listed nodes and replays unacknowledged frames on reconnect, so list the
+    writable primary first.
+    """
+    parts = []
+    for raw in str(host).split(","):
+        node = raw.strip()
+        if not node:
+            continue
+        parts.append(node if ":" in node else f"{node}:{default_port}")
+    return ",".join(parts) if parts else f"127.0.0.1:{default_port}"
+
+
+def qwp_conf(args, sender_id: Optional[str] = None,
+             auto_flush_interval: Optional[int] = None) -> str:
+    """Build the QWP configuration string used for both SQL and ingestion.
+
+    sender_id is set only for ingestion workers, where each worker needs its own
+    store-and-forward slot; SQL-only handles leave it unset.
+    """
+    scheme = "wss" if args.qwp_tls else "ws"
+    parts = [f"{scheme}::addr={qwp_addr_list(args.host)};"]
+    if args.token:
+        parts.append(f"token={args.token};")
+    else:
+        parts.append(f"username={args.user};password={args.password};")
+    if args.qwp_tls and args.tls_ca:
+        parts.append(f"tls_ca={args.tls_ca};")
+    # Self-signed cluster certificates chain to nothing, so no choice of trust
+    # root helps; verification has to be turned off explicitly.
+    if args.qwp_tls and args.tls_verify != "on":
+        parts.append(f"tls_verify={args.tls_verify};")
+    if sender_id:
+        # The client opens sf_dir but does not create it, so make it here.
+        sf_dir = os.path.join(args.store_forward_dir, sender_id)
+        os.makedirs(sf_dir, exist_ok=True)
+        parts.append(f"sender_id={sender_id};")
+        parts.append(f"sf_dir={sf_dir};")
+        if args.durable_ack:
+            parts.append("request_durable_ack=on;")
+    if auto_flush_interval is not None:
+        parts.append(f"auto_flush_interval={auto_flush_interval};")
+    return "".join(parts)
+
+
+def connect_qwp(args, sender_id: Optional[str] = None,
+                auto_flush_interval: Optional[int] = None):
+    """Open a QWP handle. connect() does no network I/O; errors surface on use."""
+    return questdb.connect(qwp_conf(args, sender_id, auto_flush_interval))
+
+
+# ----------------------------
 # DB setup
 # ----------------------------
 
 def ensure_tables_and_views(args, prefix: str):
-    conn_str = (
-        f"user={args.user} password={args.password} host={args.host} "
-        f"port={args.pg_port} dbname=qdb"
-    )
-    ttl_md = " TTL 3 DAYS" if args.short_ttl else ""
-    ttl_tr = " TTL 1 MONTH" if args.short_ttl else ""
-    with pg.connect(conn_str, autocommit=True) as conn:
+    # Tables: storage policy on Enterprise, TTL on OSS. Views: TTL on both.
+    ret_md = table_retention(args.short_ttl, args.enterprise, "3 DAYS", MD_ENTERPRISE_POLICY)
+    ret_tr = table_retention(args.short_ttl, args.enterprise, "1 MONTH", TR_ENTERPRISE_POLICY)
+    ttl_md = view_retention(args.short_ttl, "3 DAYS")
+    ttl_tr = view_retention(args.short_ttl, "1 MONTH")
+    with connect_qwp(args) as conn:
         conn.execute(f"""
         CREATE TABLE IF NOT EXISTS {table_name("commodities_market_data", prefix)} (
           timestamp TIMESTAMP_NS,
@@ -184,7 +275,7 @@ def ensure_tables_and_views(args, prefix: str):
           asks   DOUBLE[][],
           best_bid DOUBLE,
           best_ask DOUBLE
-        ) timestamp(timestamp) PARTITION BY HOUR{ttl_md};
+        ) timestamp(timestamp) PARTITION BY HOUR{ret_md};
         """)
         conn.execute(f"""
         CREATE TABLE IF NOT EXISTS {table_name("commodities_trades", prefix)} (
@@ -195,7 +286,7 @@ def ensure_tables_and_views(args, prefix: str):
           price  DOUBLE,
           size   LONG,
           side   SYMBOL
-        ) timestamp(timestamp) PARTITION BY HOUR{ttl_tr};
+        ) timestamp(timestamp) PARTITION BY HOUR{ret_tr};
         """)
         conn.execute(f"""
         CREATE TABLE IF NOT EXISTS {table_name("commodities_settlements", prefix)} (
@@ -295,18 +386,31 @@ def ensure_tables_and_views(args, prefix: str):
 
 
 def get_latest_timestamp_ns(conn, table: str):
-    cur = conn.execute(
-        f"SELECT timestamp FROM {table} ORDER BY timestamp DESC LIMIT 1"
-    )
-    row = cur.fetchone()
-    if row and row[0]:
-        dt = row[0]
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=datetime.timezone.utc)
-        else:
-            dt = dt.astimezone(datetime.timezone.utc)
-        return int(dt.timestamp() * 1e9)
-    return None
+    """Latest designated timestamp in `table`, as epoch nanoseconds, or None.
+
+    A missing table is not an error here: on a fresh database the generator is
+    about to create it, and there is nothing to advance past.
+    """
+    try:
+        with conn.query(
+            f"SELECT timestamp FROM {table} ORDER BY timestamp DESC LIMIT 1"
+        ) as result:
+            df = result.to_pandas()
+    except QuestDBError as e:
+        print(f"[INFO] Could not read latest timestamp from {table}: {e}", flush=True)
+        return None
+    if df.empty:
+        return None
+    ts = df["timestamp"].iloc[0]
+    if pd_is_null(ts):
+        return None
+    # QWP returns TIMESTAMP_NS as tz-naive datetime64[ns] holding a UTC instant.
+    return int(ts.value) if hasattr(ts, "value") else int(ts)
+
+
+def pd_is_null(value) -> bool:
+    import pandas as pd
+    return bool(pd.isna(value))
 
 
 # ----------------------------
@@ -911,22 +1015,20 @@ def generate_second(
 # ----------------------------
 
 def wal_monitor(args, pause_event, processes, interval=5, prefix=""):
-    conn_str = (
-        f"user={args.user} password={args.password} host={args.host} "
-        f"port={args.pg_port} dbname=qdb"
-    )
     threshold = 3 * processes
     last_logged_paused = False
     tbl = table_name("commodities_market_data", prefix)
-    with pg.connect(conn_str, autocommit=True) as conn:
+    with connect_qwp(args) as conn:
         while True:
             try:
-                cur = conn.execute(
-                    f"SELECT sequencerTxn, writerTxn FROM wal_tables() WHERE name = '{tbl}'"
-                )
-                row = cur.fetchone()
-                if row:
-                    seq, wrt = row
+                with conn.query(
+                    "SELECT sequencerTxn, writerTxn FROM wal_tables() WHERE name = $1",
+                    [tbl],
+                ) as result:
+                    df = result.to_pandas()
+                if not df.empty:
+                    seq = int(df["sequencerTxn"].iloc[0])
+                    wrt = int(df["writerTxn"].iloc[0])
                     lag = seq - wrt
                     if lag > threshold:
                         pause_event.set()
@@ -993,23 +1095,15 @@ def ingest_worker(
     buffer_limit = base_flush
     auto_flush_interval = base_flush * 2
 
-    if args.protocol == "http":
-        conf = (
-            f"http::addr={args.host}:9000;auto_flush_interval={auto_flush_interval};"
-            if not args.token else
-            f"https::addr={args.host}:9000;token={args.token};tls_verify=unsafe_off;"
-            f"auto_flush_interval={auto_flush_interval};"
-        )
-    else:
-        conf = (
-            f"tcp::addr={args.host}:9009;protocol_version=2;auto_flush_interval={auto_flush_interval};"
-            if not args.token else
-            f"tcps::addr={args.host}:9009;username={args.ilp_user};token={args.token};"
-            f"token_x={args.token_x};token_y={args.token_y};tls_verify=unsafe_off;"
-            f"protocol_version=2;auto_flush_interval={auto_flush_interval};"
-        )
-
-    with Sender.from_conf(conf) as sender:
+    # Each worker gets its own QWP handle, sender_id and store-and-forward slot,
+    # so un-acked frames replay per worker rather than colliding on one spool.
+    # auto_flush_interval keeps the previous ILP cadence: SortedEmitter flushes
+    # when a buffer fills, and the interval bounds latency when it does not, so
+    # a quiet real-time symbol still reaches the dashboard promptly.
+    sender_id = f"commodities-{process_idx}"
+    with connect_qwp(args, sender_id=sender_id,
+                     auto_flush_interval=auto_flush_interval) as db, \
+            db.sender() as sender:
         emitter = SortedEmitter(sender, buffer_limit, args.prefix)
         ts = start_ns
         sec_idx = 0
@@ -1155,6 +1249,15 @@ def ingest_worker(
                 if sleep_for > 0:
                     time.sleep(sleep_for)
 
+        # Drain before the lease closes. Leaving the `with` block only publishes
+        # to the store-and-forward queue without waiting, so a clean exit would
+        # otherwise drop whatever the background runner had not yet delivered.
+        try:
+            emitter.flush_all()
+            sender.flush(wait=True)
+        except QuestDBError as e:
+            print(f"[WORKER {process_idx}] Drain failed: {e}", flush=True)
+
 
 # ----------------------------
 # Main
@@ -1164,15 +1267,36 @@ def main():
     p = argparse.ArgumentParser(
         description="Commodities synthetic data generator for QuestDB"
     )
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--pg_port", default="8812")
+    # QWP carries both SQL and ingestion, so there is one endpoint and one
+    # credential. --host accepts a comma-separated list for HA failover; list
+    # the writable primary first.
+    p.add_argument("--host", default="127.0.0.1",
+                   help="QWP host, or comma-separated list for failover. "
+                        "Entries without a port default to 9000.")
     p.add_argument("--user", default="admin")
     p.add_argument("--password", default="quest")
-    p.add_argument("--token", default=None)
-    p.add_argument("--token_x", default=None)
-    p.add_argument("--token_y", default=None)
-    p.add_argument("--ilp_user", default="admin")
-    p.add_argument("--protocol", choices=["http", "tcp"], default="http")
+    p.add_argument("--token", default=None,
+                   help="QWP bearer token. Takes precedence over --user/--password.")
+    p.add_argument("--token_file", default=None,
+                   help="Read the bearer token from this file, keeping it off the "
+                        "command line.")
+    p.add_argument("--qwp_tls", type=lambda x: str(x).lower() == "true", default=False,
+                   help="Use wss instead of ws.")
+    p.add_argument("--tls_ca", default=None,
+                   help="TLS root store: os_roots, webpki_roots, or a CA bundle path.")
+    p.add_argument("--tls_verify", choices=["on", "unsafe_off"], default="on",
+                   help="Set unsafe_off for a cluster with a self-signed certificate. "
+                        "No tls_ca setting can validate one, since it chains to no "
+                        "trusted root.")
+    p.add_argument("--durable_ack", type=lambda x: str(x).lower() == "true", default=False,
+                   help="request_durable_ack=on, so a failover cannot lose acked rows.")
+    p.add_argument("--store_forward_dir",
+                   default=os.path.join(tempfile.gettempdir(), "commodities_qwp_sf"),
+                   help="Base dir for per-worker store-and-forward spill; each worker "
+                        "gets a <dir>/commodities-<idx> subdir, created if absent.")
+    p.add_argument("--enterprise", type=lambda x: str(x).lower() == "true", default=False,
+                   help="Enterprise server: tables take a STORAGE POLICY rather than a "
+                        "TTL. Materialized views take a TTL on both editions.")
 
     p.add_argument("--mode", choices=["real-time", "faster-than-life"], required=True)
 
@@ -1212,6 +1336,17 @@ def main():
         print("ERROR: min_levels cannot be greater than max_levels.")
         sys.exit(1)
 
+    if args.token_file:
+        try:
+            with open(args.token_file, "r", encoding="utf-8") as fh:
+                args.token = fh.read().strip()
+        except OSError as e:
+            print(f"ERROR: could not read --token_file {args.token_file}: {e}")
+            sys.exit(1)
+        if not args.token:
+            print(f"ERROR: --token_file {args.token_file} is empty.")
+            sys.exit(1)
+
     # Ensure base tables and views
     ensure_tables_and_views(args, prefix)
 
@@ -1227,11 +1362,7 @@ def main():
         end_ns = parse_ts_arg(args.end_ts) if args.end_ts else None
 
     # Advance start_ns past latest in tables to avoid overlap
-    conn_str = (
-        f"user={args.user} password={args.password} host={args.host} "
-        f"port={args.pg_port} dbname=qdb"
-    )
-    with pg.connect(conn_str) as conn:
+    with connect_qwp(args) as conn:
         latest_md = get_latest_timestamp_ns(conn, table_name("commodities_market_data", prefix))
         latest_tr = get_latest_timestamp_ns(conn, table_name("commodities_trades", prefix))
         latest_st = get_latest_timestamp_ns(conn, table_name("commodities_settlements", prefix))
