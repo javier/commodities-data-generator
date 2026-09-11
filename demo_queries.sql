@@ -351,6 +351,114 @@ GROUP BY t.symbol, horizon_sec
 ORDER BY t.symbol, horizon_sec;
 
 
+--------------------------------------------------
+-- Execution quality: who is picking us off
+--------------------------------------------------
+
+-- Counterparty scorecard. Every fill paired with the mid 60s later in ONE
+-- HORIZON JOIN pass, signed from the counterparty's side: positive means the
+-- market moved their way after they traded and we were adversely selected.
+SELECT
+    t.counterparty,
+    count()     AS fills,
+    sum(t.size) AS lots,
+    avg(CASE t.side
+            WHEN 'B' THEN ((m.best_bid + m.best_ask) / 2 - t.price) / t.price * 10000
+            WHEN 'S' THEN (t.price - (m.best_bid + m.best_ask) / 2) / t.price * 10000
+        END) AS markout_60s_bps
+FROM commodities_trades t
+HORIZON JOIN commodities_market_data m ON (symbol) LIST (60s) AS h
+WHERE t.timestamp IN '$yesterday'
+GROUP BY t.counterparty
+ORDER BY markout_60s_bps DESC;
+
+
+-- The markout CURVE is the part that convinces. Informed flow starts negative
+-- (it crosses the spread to get filled), turns positive as the information
+-- plays out, peaks near the information horizon, then decays.
+SELECT
+    h.offset / 1000000000 AS horizon_s,
+    t.counterparty,
+    avg(CASE t.side
+            WHEN 'B' THEN ((m.best_bid + m.best_ask) / 2 - t.price) / t.price * 10000
+            WHEN 'S' THEN (t.price - (m.best_bid + m.best_ask) / 2) / t.price * 10000
+        END) AS markout_bps
+FROM commodities_trades t
+HORIZON JOIN commodities_market_data m ON (symbol)
+    LIST (1s, 5s, 10s, 30s, 1m, 2m, 5m) AS h
+WHERE t.counterparty IN ('HFT_ARB_01', 'BANK_TIER1_03', 'MINER_01')
+  AND t.timestamp IN '$yesterday'
+GROUP BY horizon_s, t.counterparty
+ORDER BY t.counterparty, horizon_s;
+
+
+-- Venue scorecard. Compare venues WITHIN a symbol: screen venues carry the
+-- instruments their exchange lists, so a cross-instrument venue average
+-- measures the product mix rather than the venue.
+SELECT
+    t.venue,
+    count() AS fills,
+    avg(abs(t.price - (m.best_bid + m.best_ask) / 2)
+        / ((m.best_bid + m.best_ask) / 2) * 10000) AS eff_spread_bps,
+    avg(CASE WHEN t.passive THEN 1.0 ELSE 0.0 END) AS passive_rate
+FROM commodities_trades t
+ASOF JOIN commodities_market_data m ON (symbol)
+WHERE t.symbol = 'GC' AND t.timestamp IN '$yesterday'
+GROUP BY t.venue
+ORDER BY eff_spread_bps;
+
+
+-- What immediacy costs: passive fills rest and get taken, aggressive fills pay.
+SELECT
+    t.passive,
+    count() AS fills,
+    avg(abs(t.price - (m.best_bid + m.best_ask) / 2)
+        / ((m.best_bid + m.best_ask) / 2) * 10000) AS eff_spread_bps
+FROM commodities_trades t
+ASOF JOIN commodities_market_data m ON (symbol)
+WHERE t.symbol = 'GC' AND t.timestamp IN '$yesterday'
+GROUP BY t.passive;
+
+
+-- Native execution benchmarks. TWAP weights every interval equally via
+-- step-function integration; VWAP weights by size. They diverge exactly when
+-- volume clusters, which is when the benchmark choice changes the verdict.
+SELECT timestamp, symbol,
+    vwap(price, size)      AS vwap,
+    twap(price, timestamp) AS twap,
+    last(price)            AS last_price
+FROM commodities_trades
+WHERE symbol = 'GC' AND timestamp IN '$today'
+SAMPLE BY 15m;
+
+
+--------------------------------------------------
+-- Precious metals term structure (real contract months)
+--------------------------------------------------
+
+-- Gold trades in contango, crude in backwardation. Both come from live prices:
+-- each deferred leg is anchored to a real listed contract month.
+SELECT symbol,
+    (last(best_bid) + last(best_ask)) / 2 AS mid,
+    last(best_ask) - last(best_bid)       AS spread
+FROM commodities_market_data
+WHERE symbol IN ('GC', 'GC6', 'GC12', 'SI', 'SI12', 'CL', 'CL12')
+  AND timestamp IN '$today'
+GROUP BY symbol;
+
+
+-- The gold carry in dollars per ounce, over time.
+WITH front AS (
+    SELECT timestamp, (best_bid + best_ask) / 2 AS mid
+    FROM commodities_bbo_1s WHERE symbol = 'GC' AND timestamp IN '$today'
+), deferred AS (
+    SELECT timestamp, (best_bid + best_ask) / 2 AS mid
+    FROM commodities_bbo_1s WHERE symbol = 'GC12' AND timestamp IN '$today'
+)
+SELECT front.timestamp, deferred.mid - front.mid AS gold_12m_basis
+FROM front ASOF JOIN deferred;
+
+
 --------------------------------------------
 -- demo end --
 --------------------------------------------------

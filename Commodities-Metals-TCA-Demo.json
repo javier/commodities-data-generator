@@ -1,0 +1,1140 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_QUESTDB",
+      "label": "QuestDB",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "questdb-questdb-datasource",
+      "pluginName": "QuestDB"
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "description": "Precious metals term structure and execution-quality analytics on QuestDB. Real COMEX contract months for the gold and silver strips; counterparty and venue markout built on HORIZON JOIN.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 101,
+      "panels": [],
+      "title": "Precious Metals Term Structure",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "description": "Live mid price for the gold strip. Each leg is anchored to the real listed COMEX contract month resolved at startup (front, ~6M, ~12M), so the spacing between the lines is the actual market carry, not a synthetic offset. Gold trades in contango: the deferred months sit above the front.",
+      "gridPos": {
+        "h": 9,
+        "w": 16,
+        "x": 0,
+        "y": 1
+      },
+      "id": 102,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": "",
+              "mode": "list",
+              "timeField": ""
+            }
+          },
+          "rawSql": "SELECT timestamp AS time,\n       avg(CASE WHEN symbol = 'GC'   THEN (best_bid + best_ask) / 2 END) AS gold_front,\n       avg(CASE WHEN symbol = 'GC6'  THEN (best_bid + best_ask) / 2 END) AS gold_6m,\n       avg(CASE WHEN symbol = 'GC12' THEN (best_bid + best_ask) / 2 END) AS gold_12m\nFROM commodities_market_data\nWHERE $__timeFilter(timestamp) AND symbol IN ('GC', 'GC6', 'GC12')\nSAMPLE BY $__interval",
+          "refId": "A",
+          "selectedFormat": 2
+        }
+      ],
+      "title": "Gold Forward Curve - Front vs 6M vs 12M",
+      "type": "timeseries",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "spanNulls": true,
+            "showPoints": "never"
+          },
+          "unit": "currencyUSD",
+          "decimals": 2
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "gold_front"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FFD700",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "gold_6m"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FF9830",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "gold_12m"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#F2495C",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "description": "Latest mid for each anchored contract month. Gold's deferred months are ABOVE the front (contango, the cost of carry). Crude's are BELOW it (backwardation, front-month tightness). Both shapes come from live prices.",
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 1
+      },
+      "id": 103,
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": "",
+              "mode": "list",
+              "timeField": ""
+            }
+          },
+          "rawSql": "SELECT symbol,\n       (last(best_bid) + last(best_ask)) / 2 AS mid,\n       last(best_ask) - last(best_bid)       AS spread\nFROM commodities_market_data\nWHERE $__timeFilter(timestamp)\n  AND symbol IN ('GC', 'GC6', 'GC12', 'SI', 'SI12', 'CL', 'CL12')\nGROUP BY symbol",
+          "refId": "A",
+          "selectedFormat": 2
+        }
+      ],
+      "title": "Curve Snapshot - Contango vs Backwardation",
+      "type": "table",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 3,
+          "custom": {
+            "align": "right"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "description": "The gold carry in dollars per ounce, via ASOF JOIN of the two legs onto a common 1s grid. Positive and widening means the forward premium is growing.",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "id": 104,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": "",
+              "mode": "list",
+              "timeField": ""
+            }
+          },
+          "rawSql": "WITH front AS (\n  SELECT timestamp, (best_bid + best_ask) / 2 AS mid\n  FROM commodities_bbo_1s\n  WHERE symbol = 'GC' AND $__timeFilter(timestamp)\n), deferred AS (\n  SELECT timestamp, (best_bid + best_ask) / 2 AS mid\n  FROM commodities_bbo_1s\n  WHERE symbol = 'GC12' AND $__timeFilter(timestamp)\n)\nSELECT front.timestamp AS time,\n       deferred.mid - front.mid AS gold_12m_basis\nFROM front ASOF JOIN deferred",
+          "refId": "GOLD",
+          "selectedFormat": 2
+        }
+      ],
+      "title": "Gold 12M Basis (GC12 - GC)",
+      "type": "timeseries",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never"
+          },
+          "unit": "currencyUSD",
+          "color": {
+            "fixedColor": "#FFD700",
+            "mode": "fixed"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "id": 105,
+      "panels": [],
+      "title": "Execution Quality - Who Is Picking Us Off",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "description": "Every fill paired with the mid 60 seconds later via HORIZON JOIN, then averaged per counterparty. Markout is signed FROM THE COUNTERPARTY'S SIDE: red means the market moved their way after they traded and we were adversely selected; green means we internalised profitable flow. One query, no pre-aggregation, over the full trade history.",
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "id": 106,
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": "",
+              "mode": "list",
+              "timeField": ""
+            }
+          },
+          "rawSql": "SELECT t.counterparty,\n       count()      AS fills,\n       sum(t.size)  AS lots,\n       avg(CASE WHEN t.side = 'B' THEN ((m.best_bid + m.best_ask) / 2 - t.price) / t.price * 10000 ELSE (t.price - (m.best_bid + m.best_ask) / 2) / t.price * 10000 END) AS markout_60s_bps\nFROM commodities_trades t\nHORIZON JOIN commodities_market_data m ON (symbol) LIST (60s) AS h\nWHERE $__timeFilter(t.timestamp)\nGROUP BY t.counterparty\nORDER BY markout_60s_bps DESC",
+          "refId": "A",
+          "selectedFormat": 2
+        }
+      ],
+      "title": "Counterparty Scorecard - 60s Markout",
+      "type": "table",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "right"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "counterparty"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "markout_60s_bps"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 0
+                    },
+                    {
+                      "color": "red",
+                      "value": 8
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "description": "The same markout computed at a grid of horizons in a single HORIZON JOIN pass. Informed flow starts NEGATIVE (they cross the spread to get filled) and turns sharply positive as their information plays out. Hedger flow just keeps decaying in our favour. The peak marks where their edge is exhausted. X axis is seconds after the fill, not wall-clock time.",
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "id": 107,
+      "options": {
+        "xField": "horizon_s",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "max",
+            "min"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": "",
+              "mode": "list",
+              "timeField": ""
+            }
+          },
+          "rawSql": "SELECT h.offset / 1000000000 AS horizon_s,\n       avg(CASE WHEN t.counterparty = 'HFT_ARB_01' THEN\n           CASE WHEN t.side = 'B' THEN ((m.best_bid + m.best_ask) / 2 - t.price) / t.price * 10000 ELSE (t.price - (m.best_bid + m.best_ask) / 2) / t.price * 10000 END END) AS hft_arb_01,\n       avg(CASE WHEN t.counterparty = 'MACRO_FUND_01' THEN\n           CASE WHEN t.side = 'B' THEN ((m.best_bid + m.best_ask) / 2 - t.price) / t.price * 10000 ELSE (t.price - (m.best_bid + m.best_ask) / 2) / t.price * 10000 END END) AS macro_fund_01,\n       avg(CASE WHEN t.counterparty = 'BANK_TIER1_03' THEN\n           CASE WHEN t.side = 'B' THEN ((m.best_bid + m.best_ask) / 2 - t.price) / t.price * 10000 ELSE (t.price - (m.best_bid + m.best_ask) / 2) / t.price * 10000 END END) AS bank_tier1_03,\n       avg(CASE WHEN t.counterparty = 'MINER_01' THEN\n           CASE WHEN t.side = 'B' THEN ((m.best_bid + m.best_ask) / 2 - t.price) / t.price * 10000 ELSE (t.price - (m.best_bid + m.best_ask) / 2) / t.price * 10000 END END) AS miner_01\nFROM commodities_trades t\nHORIZON JOIN commodities_market_data m ON (symbol)\n     LIST (1s, 5s, 10s, 30s, 1m, 2m, 5m) AS h\nWHERE $__timeFilter(t.timestamp)\nGROUP BY horizon_s\nORDER BY horizon_s",
+          "refId": "A",
+          "selectedFormat": 2
+        }
+      ],
+      "title": "Markout Decay Curve - Sharpest vs Most Benign Flow",
+      "type": "trend",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "always",
+            "pointSize": 6,
+            "spanNulls": true
+          },
+          "unit": "none",
+          "decimals": 2
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "hft_arb_01"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#F2495C",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "macro_fund_01"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FF9830",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "bank_tier1_03"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#8AB8FF",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "miner_01"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#73BF69",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "timeFrom": null
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "description": "Per-venue execution cost for the selected symbol only. Venue must be compared WITHIN an instrument: screen venues carry the instruments their exchange lists, so a cross-instrument venue average measures the product mix, not the venue. Effective spread is distance from mid at fill time.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
+      "id": 108,
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": "",
+              "mode": "list",
+              "timeField": ""
+            }
+          },
+          "rawSql": "SELECT t.venue,\n       count() AS fills,\n       avg(abs(t.price - (m.best_bid + m.best_ask) / 2)\n           / ((m.best_bid + m.best_ask) / 2) * 10000) AS eff_spread_bps,\n       avg(CASE WHEN t.passive THEN 1.0 ELSE 0.0 END) AS passive_rate\nFROM commodities_trades t\nASOF JOIN commodities_market_data m ON (symbol)\nWHERE $__timeFilter(t.timestamp) AND t.symbol = '${SYMBOL}'\nGROUP BY t.venue\nORDER BY eff_spread_bps",
+          "refId": "A",
+          "selectedFormat": 2
+        }
+      ],
+      "title": "Venue Scorecard - ${SYMBOL}",
+      "type": "table",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "right"
+          },
+          "decimals": 3
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "venue"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "passive_rate"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "eff_spread_bps"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 0.25
+                    },
+                    {
+                      "color": "red",
+                      "value": 0.5
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "description": "What crossing the spread actually costs. Passive fills rest and get taken; aggressive fills pay to get done. The gap is the price of immediacy.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "id": 109,
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": "",
+              "mode": "list",
+              "timeField": ""
+            }
+          },
+          "rawSql": "SELECT t.passive,\n       count() AS fills,\n       avg(abs(t.price - (m.best_bid + m.best_ask) / 2)\n           / ((m.best_bid + m.best_ask) / 2) * 10000) AS eff_spread_bps\nFROM commodities_trades t\nASOF JOIN commodities_market_data m ON (symbol)\nWHERE $__timeFilter(t.timestamp) AND t.symbol = '${SYMBOL}'\nGROUP BY t.passive",
+          "refId": "A",
+          "selectedFormat": 2
+        }
+      ],
+      "title": "Passive vs Aggressive Fill Cost - ${SYMBOL}",
+      "type": "table",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "right"
+          },
+          "decimals": 3
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "eff_spread_bps"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 0.25
+                    },
+                    {
+                      "color": "red",
+                      "value": 0.5
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      },
+      "id": 110,
+      "panels": [],
+      "title": "Execution Benchmarks - ${SYMBOL}",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "description": "QuestDB's native vwap(price, size) and twap(price, timestamp) aggregates. TWAP weights every interval equally via step-function integration; VWAP weights by size. They diverge exactly when volume clusters, which is when the choice of benchmark changes what a fill is judged against.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      },
+      "id": 111,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": "",
+              "mode": "list",
+              "timeField": ""
+            }
+          },
+          "rawSql": "SELECT timestamp AS time,\n       vwap(price, size)      AS vwap,\n       twap(price, timestamp) AS twap,\n       last(price)            AS last_price,\n       (vwap(price, size) - twap(price, timestamp))\n           / twap(price, timestamp) * 10000 AS vwap_minus_twap_bps\nFROM commodities_trades\nWHERE $__timeFilter(timestamp) AND symbol = '${SYMBOL}'\nSAMPLE BY $__interval",
+          "refId": "A",
+          "selectedFormat": 2
+        }
+      ],
+      "title": "VWAP vs TWAP vs Last - ${SYMBOL}",
+      "type": "timeseries",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "spanNulls": true,
+            "showPoints": "never"
+          },
+          "unit": "currencyUSD",
+          "decimals": 3
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "vwap"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FF9830",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "twap"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#8AB8FF",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "last_price"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#73BF69",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    6,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "vwap_minus_twap_bps"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#B877D9",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.axisLabel",
+                "value": "VWAP - TWAP (bps)"
+              },
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 10
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "description": "Traded OHLC bars for the selected symbol.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 48
+      },
+      "id": 112,
+      "options": {
+        "mode": "candles+volume",
+        "includeAllFields": false,
+        "candleStyle": "candles",
+        "colorStrategy": "open-close",
+        "colors": {
+          "up": "#73BF69",
+          "down": "#F2495C"
+        },
+        "fields": {
+          "open": "open",
+          "high": "high",
+          "low": "low",
+          "close": "close",
+          "volume": "volume"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": "",
+              "mode": "list",
+              "timeField": ""
+            }
+          },
+          "rawSql": "SELECT timestamp AS time,\n       first(price) AS open, max(price) AS high,\n       min(price) AS low, last(price) AS close,\n       sum(size) AS volume\nFROM commodities_trades\nWHERE $__timeFilter(timestamp) AND symbol = '${SYMBOL}'\nSAMPLE BY $__interval",
+          "refId": "A",
+          "selectedFormat": 2
+        }
+      ],
+      "title": "OHLC + Volume - ${SYMBOL}",
+      "type": "candlestick",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "axisBorderShow": false,
+            "axisPlacement": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "hidden"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "description": "Visualizes the order book snapshot for the selected commodity, showing the price and cumulative volume at each bid and ask level. The area under the green (bids) and red (asks) lines represents market liquidity on both sides, with the mid-price and top volume walls highlighted.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 57
+      },
+      "hideTimeOverride": true,
+      "id": 113,
+      "maxPerRow": 2,
+      "options": {
+        "onclick": "console.log(data)\nwindow.updateVariables({query:{'var-project':'test'}, partial: true})",
+        "script": "function parseArray(val) {\n  if (Array.isArray(val)) return val;\n  if (typeof val === \"string\") {\n    return val.replace(/[{}]/g, \"\")\n      .split(\",\")\n      .filter(x => x.length > 0)\n      .map(Number);\n  }\n  return [];\n}\n\nconst NUM_SEGMENTS = 4;\nconst table = data.series[0];\nconst fields = table.fields;\n\nconst bprices = fields.find(f => f.name === \"bprices\");\nconst bcumvolumes = fields.find(f => f.name === \"bcumvolumes\");\nconst bvolumes = fields.find(f => f.name === \"bvolumes\");\nconst aprices = fields.find(f => f.name === \"aprices\");\nconst acumvolumes = fields.find(f => f.name === \"acumvolumes\");\nconst avolumes = fields.find(f => f.name === \"avolumes\");\n\nif (!bprices || !bcumvolumes || !aprices || !acumvolumes) {\n  throw new Error(\"Missing required array fields\");\n}\n\nconst bps = parseArray(bprices.values.get(0));\nconst bvs = parseArray(bcumvolumes.values.get(0));\nconst brs = bvolumes ? parseArray(bvolumes.values.get(0)) : [];\nconst aps = parseArray(aprices.values.get(0));\nconst avs = parseArray(acumvolumes.values.get(0));\nconst ars = avolumes ? parseArray(avolumes.values.get(0)) : [];\n\nconst bids = [];\nfor (let i = 0; i < Math.min(bps.length, bvs.length); i++) {\n  bids.push({ x: bps[i], y: bvs[i], raw: brs[i] ?? null });\n}\n\nconst asks = [];\nfor (let i = 0; i < Math.min(aps.length, avs.length); i++) {\n  asks.push({ x: aps[i], y: avs[i], raw: ars[i] ?? null });\n}\n\nbids.sort((a, b) => b.x - a.x);\nasks.sort((a, b) => a.x - b.x);\n\nconst bestBid = bids[0]?.x ?? 0;\nconst bestAsk = asks[0]?.x ?? 0;\nconst mid = (bestBid + bestAsk) / 2;\nif (bids.length > 0 && asks.length > 0) {\n  const bidY = bids[0].y;\n  const askY = asks[0].y;\n  const midY = Math.min(bidY, askY);\n  bids.unshift({ x: mid, y: midY });\n  asks.unshift({ x: mid, y: midY });\n  bids.push({ x: bids[bids.length - 1].x - 0.0001, y: 0 });\n  asks.push({ x: asks[asks.length - 1].x + 0.0001, y: 0 });\n}\n\nfunction segmentedWalls(levels, nSegments) {\n  const N = levels.length;\n  if (N === 0) return [];\n  const result = [];\n  const segSize = Math.floor(N / nSegments);\n  for (let seg = 0; seg < nSegments; seg++) {\n    const start = seg * segSize;\n    const end = seg === nSegments - 1 ? N : (seg + 1) * segSize;\n    let maxIdx = -1, maxRaw = -Infinity;\n    for (let i = start; i < end; i++) {\n      if (levels[i]?.raw !== undefined && levels[i].raw > maxRaw) {\n        maxRaw = levels[i].raw;\n        maxIdx = i;\n      }\n    }\n    if (maxIdx >= 0) result.push(levels[maxIdx]);\n  }\n  return result;\n}\n\nconst topBids = segmentedWalls(bids, NUM_SEGMENTS);\nconst topAsks = segmentedWalls(asks, NUM_SEGMENTS);\n\n// Dynamic precision based on price magnitude\nconst priceFmt = (p) => p >= 100 ? p.toFixed(2) : p >= 1 ? p.toFixed(4) : p.toPrecision(5);\n\nconst wallLines = [...topBids, ...topAsks].map(wall => ({\n  type: \"line\", x0: wall.x, x1: wall.x, y0: 0, y1: 1,\n  xref: \"x\", yref: \"paper\",\n  line: { color: \"yellow\", width: 1, dash: \"dot\" }\n}));\n\nconst wallLabels = [...topBids, ...topAsks].map(wall => ({\n  x: wall.x, y: 1.02, xref: \"x\", yref: \"paper\",\n  text: priceFmt(wall.x),\n  showarrow: false, font: { color: \"yellow\", size: 10 }\n}));\n\nconst minX = Math.min(...bids.map(b => b.x), ...asks.map(a => a.x), mid);\nconst maxX = Math.max(...bids.map(b => b.x), ...asks.map(a => a.x), mid);\nconst pad = (maxX - minX) * 0.01;\n\nreturn {\n  data: [\n    {\n      name: \"Bids\", x: bids.map(pt => pt.x), y: bids.map(pt => pt.y),\n      mode: \"lines\", fill: \"tozeroy\",\n      fillcolor: \"rgba(0,255,0,0.2)\",\n      line: { shape: \"hv\", color: \"rgba(0,255,0,0.7)\", width: 2 },\n      type: \"scatter\",\n      hovertemplate: \"Price: %{x}<br>CumVol: %{y}<extra></extra>\"\n    },\n    {\n      name: \"Asks\", x: asks.map(pt => pt.x), y: asks.map(pt => pt.y),\n      mode: \"lines\", fill: \"tozeroy\",\n      fillcolor: \"rgba(255,0,0,0.2)\",\n      line: { shape: \"hv\", color: \"rgba(255,0,0,0.7)\", width: 2 },\n      type: \"scatter\",\n      hovertemplate: \"Price: %{x}<br>CumVol: %{y}<extra></extra>\"\n    }\n  ],\n  layout: {\n    plot_bgcolor: \"black\", paper_bgcolor: \"black\",\n    font: { color: \"white\" },\n    xaxis: { title: \"Price\", type: \"linear\", showgrid: true, gridcolor: \"rgba(255,255,255,0.1)\", zeroline: false, range: [minX - pad, maxX + pad] },\n    yaxis: { title: \"Cumulative Volume (lots)\", type: \"log\", showgrid: true, gridcolor: \"rgba(255,255,255,0.1)\", zeroline: false },\n    margin: { t: 20, l: 40, r: 10, b: 30 },\n    shapes: [\n      { type: \"line\", x0: mid, x1: mid, y0: 0, y1: 1, xref: \"x\", yref: \"paper\", line: { color: \"white\", width: 1, dash: \"dot\" } },\n      ...wallLines\n    ],\n    annotations: wallLabels,\n    legend: { orientation: \"h\", x: 0.5, xanchor: \"center\", y: -0.3 }\n  }\n};"
+      },
+      "pluginVersion": "0.5.0",
+      "repeat": "SYMBOL",
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "format": 1,
+          "meta": {
+            "builderOptions": {
+              "fields": [],
+              "limit": "",
+              "mode": "list",
+              "timeField": ""
+            }
+          },
+          "queryType": "sql",
+          "rawSql": "WITH snapshot AS (\n  SELECT timestamp, bids, asks\n  FROM commodities_market_data\n  WHERE $__timeFilter(timestamp) AND symbol = '${SYMBOL}'\n  ORDER BY timestamp DESC\n  LIMIT 1\n)\nSELECT timestamp, bids[1] as bprices, bids[2] as bvolumes, array_cum_sum(bids[2]) as bcumvolumes, asks[1] as aprices, asks[2] as avolumes, array_cum_sum(asks[2]) as acumvolumes FROM snapshot;\n",
+          "refId": "A",
+          "selectedFormat": 2
+        }
+      ],
+      "timeFrom": "10m",
+      "title": "Market Depth - ${SYMBOL}",
+      "type": "ae3e-plotly-panel"
+    }
+  ],
+  "preload": false,
+  "refresh": "5s",
+  "schemaVersion": 41,
+  "tags": [
+    "commodities",
+    "metals",
+    "questdb",
+    "tca"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "SYMBOL",
+        "label": "Symbol",
+        "type": "query",
+        "datasource": {
+          "type": "questdb-questdb-datasource",
+          "uid": "${DS_QUESTDB}"
+        },
+        "query": "SELECT DISTINCT symbol FROM (\n  SELECT symbol FROM commodities_market_data\n  WHERE timestamp > dateadd('d', -4, now())\n  LATEST ON timestamp PARTITION BY symbol\n) ORDER BY symbol;",
+        "current": {
+          "text": [
+            "GC"
+          ],
+          "value": [
+            "GC"
+          ]
+        },
+        "refresh": 1,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false,
+        "options": [],
+        "definition": "",
+        "hide": 0
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "250ms",
+      "500ms",
+      "1s",
+      "2s",
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h",
+      "2h",
+      "1d"
+    ]
+  },
+  "timezone": "browser",
+  "title": "Commodities - Metals Curve & Execution Quality",
+  "uid": "commodities-metals-tca",
+  "version": 1
+}
