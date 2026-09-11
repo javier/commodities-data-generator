@@ -32,6 +32,7 @@ import tempfile
 import time
 import sys
 import multiprocessing as mp
+from collections import deque
 from multiprocessing import Event
 from zoneinfo import ZoneInfo
 from typing import Optional
@@ -60,9 +61,12 @@ COMMODITIES = [
     ("HO",   "Heating Oil",           "HO=F",   1.0,   5.0, 4, 0.0001, 42000, "gal",  "NYMEX", "energy",  5),
     ("JKM",  "LNG Japan-Korea",       "JKM=F",  5.0,  40.0, 2, 0.01,  10000, "MMBtu", "ICE",   "energy",  6),
 
-    # Deferred months (2) - derived from front month
-    ("CL12", "WTI Crude 12-Month",    None,    28.0, 145.0, 2, 0.01,   1000, "bbl",   "NYMEX", "energy", 10),
-    ("NG12", "Nat Gas 12-Month",      None,     0.8,   9.0, 3, 0.001, 10000, "MMBtu", "NYMEX", "energy", 10),
+    # Deferred months - anchored to REAL listed contract months on Yahoo.
+    # "@ROOT+N" resolves at fetch time to the nearest listed contract at least N
+    # months out (e.g. "@CL+12" -> CLU27.NYM), so these never expire and the
+    # term structure carries the real curve shape rather than a synthetic basis.
+    ("CL12", "WTI Crude 12-Month",    "@CL+12", 28.0, 145.0, 2, 0.01,   1000, "bbl",   "NYMEX", "energy", 10),
+    ("NG12", "Nat Gas 12-Month",      "@NG+12",  0.8,   9.0, 3, 0.001, 10000, "MMBtu", "NYMEX", "energy", 10),
 
     # Power (4) - EIA API (demand-based bracket scaling)
     ("PJM",  "PJM Western Hub",       None,    15.0, 200.0, 2, 0.05,    40, "MWh",   "ICE",   "power",   3),
@@ -71,11 +75,18 @@ COMMODITIES = [
     ("NBPL", "New England (NEPOOL)",  None,    15.0, 150.0, 2, 0.05,    50, "MWh",   "ICE",   "power",   7),
 
     # Metals (5) - Yahoo Finance
-    ("GC",   "Gold",                  "GC=F", 1200.0, 3500.0, 2, 0.10, 100,  "oz",   "COMEX", "metals",  1),
-    ("SI",   "Silver",                "SI=F",   15.0,   50.0, 3, 0.005, 5000, "oz",   "COMEX", "metals",  2),
-    ("HG",   "Copper",                "HG=F",    2.0,    7.0, 4, 0.0005, 25000, "lb", "COMEX", "metals",  3),
-    ("PL",   "Platinum",              "PL=F",  600.0, 1500.0, 2, 0.10,   50,  "oz",   "NYMEX", "metals",  5),
+    ("GC",   "Gold",                  "GC=F", 1200.0, 6000.0, 2, 0.10, 100,  "oz",   "COMEX", "metals",  1),
+    ("SI",   "Silver",                "SI=F",   15.0,  100.0, 3, 0.005, 5000, "oz",   "COMEX", "metals",  1),
+    ("HG",   "Copper",                "HG=F",    2.0,   10.0, 4, 0.0005, 25000, "lb", "COMEX", "metals",  3),
+    ("PL",   "Platinum",              "PL=F",  600.0, 2500.0, 2, 0.10,   50,  "oz",   "NYMEX", "metals",  5),
     ("PA",   "Palladium",             "PA=F",  500.0, 2500.0, 2, 0.10,  100,  "oz",   "NYMEX", "metals",  5),
+
+    # Precious metals forward curve (3) - real listed contract months.
+    # Gold trades in steep contango (the carry/rates story a metals desk lives
+    # in), which the CL/CL12 backwardation on the energy side contrasts against.
+    ("GC6",  "Gold 6-Month",          "@GC+6", 1200.0, 6000.0, 2, 0.10, 100,  "oz",   "COMEX", "metals",  6),
+    ("GC12", "Gold 12-Month",         "@GC+12",1200.0, 6000.0, 2, 0.10, 100,  "oz",   "COMEX", "metals",  8),
+    ("SI12", "Silver 12-Month",       "@SI+12",  15.0,  100.0, 3, 0.005, 5000, "oz",  "COMEX", "metals",  8),
 
     # Agriculture (7) - Yahoo Finance
     ("ZC",   "Corn",                  "ZC=F",  300.0, 800.0,  2, 0.25,  5000, "bu",   "CBOT",  "ags",     2),
@@ -87,8 +98,56 @@ COMMODITIES = [
     ("CT",   "Cotton",                "CT=F",   50.0, 150.0,  2, 0.01, 50000, "lb",   "ICE",   "ags",     5),
 ]
 
-DEFERRED_LINKS = {"CL12": "CL", "NG12": "NG"}
+# Deferred symbol -> its front month. The deferred mid tracks the front mid plus
+# the real curve basis (derived from the two anchored brackets), so the strip
+# co-moves the way a real term structure does instead of drifting apart.
+DEFERRED_LINKS = {
+    "CL12": "CL", "NG12": "NG",
+    "GC6": "GC", "GC12": "GC", "SI12": "SI",
+}
 POWER_SYMBOLS = {"PJM", "ERCT", "CISO", "NBPL"}
+
+# Futures delivery-month codes, and the months each root actually lists.
+MONTH_CODE = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
+              7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"}
+
+CONTRACT_ROOTS = {
+    "GC": (".CMX", (2, 4, 6, 8, 10, 12)),
+    "SI": (".CMX", (3, 5, 7, 9, 12)),
+    "HG": (".CMX", (3, 5, 7, 9, 12)),
+    "PL": (".NYM", (1, 4, 7, 10)),
+    "PA": (".NYM", (3, 6, 9, 12)),
+    "CL": (".NYM", tuple(range(1, 13))),
+    "NG": (".NYM", tuple(range(1, 13))),
+}
+
+
+def resolve_contract_ticker(spec: str, today: Optional[datetime.date] = None) -> Optional[str]:
+    """Turn a "@ROOT+N" spec into a live Yahoo contract ticker.
+
+    Returns the nearest listed delivery month at least N months out, e.g.
+    "@GC+6" on 2026-09-10 -> "GCJ27.CMX". Contract codes expire, so this is
+    resolved on every bracket refresh rather than hard-coded.
+    """
+    if not spec or not spec.startswith("@") or "+" not in spec:
+        return None
+    root, _, ahead_s = spec[1:].partition("+")
+    if root not in CONTRACT_ROOTS:
+        return None
+    try:
+        ahead = int(ahead_s)
+    except ValueError:
+        return None
+    suffix, listed = CONTRACT_ROOTS[root]
+    today = today or datetime.datetime.now(datetime.timezone.utc).date()
+    total = today.year * 12 + (today.month - 1) + ahead
+    for _ in range(24):
+        year, month = divmod(total, 12)
+        month += 1
+        if month in listed:
+            return f"{root}{MONTH_CODE[month]}{year % 100:02d}{suffix}"
+        total += 1
+    return None
 
 # Build lookup dicts from the tuple list
 _SYM_INFO = {}
@@ -118,6 +177,104 @@ LADDER_PROFILES = {
     "metals": (1, 300),
     "ags":    (1, 400),
 }
+
+# ----------------------------
+# Counterparties, venues and adverse selection
+# ----------------------------
+#
+# The point of this block is that a counterparty scorecard has to FIND something.
+# Assigning counterparties at random produces a table with visible dispersion
+# that is pure sampling noise, which collapses the moment anyone drills into it.
+# So flow here is deliberately informed or uninformed:
+#
+#   toxicity > 0  the counterparty trades WITH the next move (informed flow;
+#                 we are adversely selected and mark out negative against them)
+#   toxicity < 0  the counterparty trades AGAINST it (hedgers, risk-recycling;
+#                 profitable flow for us)
+#   toxicity = 0  coin flip, no edge either way
+#
+# |toxicity| is the probability that the side is chosen by looking ahead rather
+# than at random, so 0.85 means 85% informed, 15% noise. Nothing is 1.0: a
+# counterparty that is right every single time reads as synthetic.
+#
+# (counterparty, toxicity, aggressive_rate)
+COUNTERPARTIES = [
+    # Latency-sensitive systematic flow: the sharpest, and it takes liquidity.
+    ("HFT_ARB_01",     0.85, 0.95),
+    ("HFT_ARB_02",     0.78, 0.93),
+    ("HFT_MM_03",      0.55, 0.70),
+    ("HFT_MM_04",      0.42, 0.68),
+    # Discretionary and systematic macro: informed but slower and more passive.
+    ("MACRO_FUND_01",  0.38, 0.55),
+    ("MACRO_FUND_02",  0.30, 0.50),
+    ("CTA_TREND_01",   0.22, 0.60),
+    ("CTA_TREND_02",   0.18, 0.58),
+    # Bank flow: broadly neutral, this is the bulk of the book.
+    ("BANK_TIER1_01",  0.05, 0.45),
+    ("BANK_TIER1_02",  0.02, 0.44),
+    ("BANK_TIER1_03",  0.00, 0.42),
+    ("BANK_TIER2_04",  0.00, 0.40),
+    ("BANK_TIER2_05", -0.03, 0.38),
+    ("BANK_TIER2_06", -0.05, 0.36),
+    ("BROKER_01",      0.08, 0.50),
+    ("BROKER_02",      0.03, 0.48),
+    # Corporate and physical hedgers: uninformed by construction. A refiner
+    # hedging output sells into strength because of its production schedule,
+    # not because it has a view, so this flow is profitable to internalise.
+    ("REFINER_01",    -0.35, 0.25),
+    ("REFINER_02",    -0.28, 0.24),
+    ("MINER_01",      -0.40, 0.22),
+    ("MINER_02",      -0.32, 0.20),
+    ("UTILITY_01",    -0.30, 0.26),
+    ("AIRLINE_01",    -0.25, 0.28),
+    ("CORP_TREAS_01", -0.20, 0.30),
+    ("ETF_TRUST_01",  -0.15, 0.35),
+]
+
+COUNTERPARTY_NAMES = [c[0] for c in COUNTERPARTIES]
+_CPTY_INFO = {c[0]: {"toxicity": c[1], "aggressive": c[2]} for c in COUNTERPARTIES}
+
+# Informed flow is a minority of tickets but a large share of the pain, so the
+# sharp names are sampled less often than the bank and hedger flow they hide in.
+COUNTERPARTY_WEIGHTS = [
+    1.0 if abs(_CPTY_INFO[n]["toxicity"]) < 0.1 else
+    0.45 if abs(_CPTY_INFO[n]["toxicity"]) < 0.35 else 0.22
+    for n in COUNTERPARTY_NAMES
+]
+
+# Execution venues. spread_mult scales how far off mid a fill prints, so a venue
+# scorecard shows real dispersion too: screen venues are tight, RFQ costs a
+# little more, and voice prints away from the touch the way it does in life.
+# tox_mult scales the counterparty's edge, since relationship voice flow is
+# systematically less sharp than co-located screen flow.
+# (venue, weight, spread_mult, tox_mult, allow_outside_touch)
+VENUES = [
+    ("CME_GLOBEX",   0.44, 1.00, 1.00, False),
+    ("ICE_WEBICE",   0.24, 1.05, 0.95, False),
+    ("DIRECT_API",   0.12, 0.85, 1.15, False),
+    ("RFQ_PLATFORM", 0.12, 1.60, 0.70, True),
+    ("OTC_VOICE",    0.08, 2.60, 0.40, True),
+]
+VENUE_NAMES = [v[0] for v in VENUES]
+VENUE_WEIGHTS = [v[1] for v in VENUES]
+_VENUE_INFO = {v[0]: {"spread_mult": v[2], "tox_mult": v[3], "outside": v[4]}
+               for v in VENUES}
+
+# Screen venues route to the instrument's own exchange, so a COMEX gold ticket
+# does not print on ICE's platform.
+EXCHANGE_SCREEN_VENUE = {
+    "NYMEX": "CME_GLOBEX", "COMEX": "CME_GLOBEX", "CBOT": "CME_GLOBEX",
+    "ICE": "ICE_WEBICE",
+}
+
+
+def pick_venue(exchange: str) -> str:
+    venue = random.choices(VENUE_NAMES, weights=VENUE_WEIGHTS, k=1)[0]
+    # Keep screen flow on the venue that actually lists the contract.
+    if venue in ("CME_GLOBEX", "ICE_WEBICE"):
+        return EXCHANGE_SCREEN_VENUE.get(exchange, "CME_GLOBEX")
+    return venue
+
 
 # EIA hub mapping: our symbol -> state code (for retail-sales industrial prices)
 EIA_HUB_STATE = {
@@ -152,6 +309,23 @@ def ns_to_iso(ns: int) -> str:
 def quantize_price(price: float, tick: float, precision: int) -> float:
     return round(round(price / tick) * tick, precision)
 
+
+def quantize_bbo(mid: float, spread: float, tick: float, precision: int):
+    """Quantize a mid/spread into a bid and ask that are always at least a tick apart.
+
+    Quantizing the two sides independently can collapse them onto the same price:
+    when the spread is clamped to one tick, mid +/- tick/2 rounds to the same
+    value whenever the mid sits near a tick boundary. That produced locked books
+    (best_ask == best_bid, spread exactly 0) on about 1% of rows, which drags any
+    average-spread panel and is the kind of thing a metals desk notices.
+    Widening by a tick from the bid is the cheap fix and never crosses.
+    """
+    bid = quantize_price(mid - spread / 2.0, tick, precision)
+    ask = quantize_price(mid + spread / 2.0, tick, precision)
+    if ask <= bid:
+        ask = round(bid + tick, precision)
+    return bid, ask
+
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
@@ -181,7 +355,9 @@ def table_name(name: str, prefix: str) -> str:
 # storage policy on Enterprise and a TTL on OSS, while views always take a TTL.
 #
 # DROP LOCAL must never run without a remote tier ahead of it, or it is simply
-# deletion. These mirror the policy the FX generator already runs in production.
+# deletion. These mirror the policy the FX generator already runs in production:
+# tier to object storage within the hour, convert to Parquet after two days, and
+# only release local copies after three months.
 MD_ENTERPRISE_POLICY = "TO REMOTE 1 hour, TO PARQUET 2 days, DROP LOCAL 3 months"
 TR_ENTERPRISE_POLICY = "TO REMOTE 1 hour, TO PARQUET 2 days, DROP LOCAL 3 months"
 
@@ -285,7 +461,10 @@ def ensure_tables_and_views(args, prefix: str):
           commodity_class SYMBOL CAPACITY 16,
           price  DOUBLE,
           size   LONG,
-          side   SYMBOL
+          side   SYMBOL,
+          venue  SYMBOL CAPACITY 16,
+          counterparty SYMBOL CAPACITY 64,
+          passive BOOLEAN
         ) timestamp(timestamp) PARTITION BY HOUR{ret_tr};
         """)
         conn.execute(f"""
@@ -418,7 +597,11 @@ def pd_is_null(value) -> bool:
 # ----------------------------
 
 def fetch_yahoo_brackets(pct: float = 1.0):
+    """Returns (brackets, anchored) where `anchored` holds the symbols that got
+    live prices. Symbols that fell back to their static bracket are excluded, so
+    callers can tell a real anchor from a guess."""
     out = {}
+    anchored = set()
     frac = pct / 100.0
     print("[INFO] Refreshing commodity brackets from Yahoo Finance.", flush=True)
     for row in COMMODITIES:
@@ -426,6 +609,16 @@ def fetch_yahoo_brackets(pct: float = 1.0):
         default_low, default_high = row[3], row[4]
         if yahoo_ticker is None:
             continue
+        if yahoo_ticker.startswith("@"):
+            resolved = resolve_contract_ticker(yahoo_ticker)
+            if resolved is None:
+                print(f"[YF] {sym}: could not resolve contract spec {yahoo_ticker}, "
+                      f"fallback bracket [{default_low:.4f}, {default_high:.4f}]",
+                      flush=True)
+                out[sym] = (default_low, default_high)
+                continue
+            print(f"[YF] {sym}: {yahoo_ticker} -> {resolved}", flush=True)
+            yahoo_ticker = resolved
         try:
             bars = yf.Ticker(yahoo_ticker).history(period="5d", interval="1d")
             if not bars.empty:
@@ -437,6 +630,7 @@ def fetch_yahoo_brackets(pct: float = 1.0):
                     raise ValueError("Price NaN or zero")
                 low = mid * (1 - frac)
                 high = mid * (1 + frac)
+                anchored.add(sym)
             else:
                 raise ValueError("Empty dataframe")
         except Exception:
@@ -448,7 +642,7 @@ def fetch_yahoo_brackets(pct: float = 1.0):
                 flush=True,
             )
         out[sym] = (low, high)
-    return out
+    return out, anchored
 
 
 # ----------------------------
@@ -517,13 +711,18 @@ def fetch_eia_brackets(api_key: Optional[str] = None, pct: float = 1.0):
 def fetch_all_brackets(eia_api_key: Optional[str] = None, pct: float = 1.0):
     brackets = {}
     # Yahoo-sourced symbols
-    yahoo = fetch_yahoo_brackets(pct)
+    yahoo, anchored = fetch_yahoo_brackets(pct)
     brackets.update(yahoo)
     # EIA-sourced power symbols
     eia = fetch_eia_brackets(eia_api_key, pct)
     brackets.update(eia)
-    # Deferred months: derive from front month if available, else use static
+    # Deferred months keep their OWN anchor when Yahoo served the real contract:
+    # that anchor is what carries the live curve shape. Only fall back to a
+    # front-derived bracket when the contract could not be priced, otherwise the
+    # basis collapses to zero and the term structure goes flat.
     for deferred_sym, front_sym in DEFERRED_LINKS.items():
+        if deferred_sym in anchored:
+            continue
         info = _SYM_INFO[deferred_sym]
         if front_sym in brackets:
             front_low, front_high = brackets[front_sym]
@@ -531,6 +730,12 @@ def fetch_all_brackets(eia_api_key: Optional[str] = None, pct: float = 1.0):
             brackets[deferred_sym] = (front_low * 0.97, front_high * 1.03)
         else:
             brackets[deferred_sym] = (info["low"], info["high"])
+    if anchored:
+        curve = ", ".join(
+            f"{s}={((brackets[s][0] + brackets[s][1]) / 2):.2f}"
+            for s in ("GC", "GC6", "GC12", "CL", "CL12") if s in brackets
+        )
+        print(f"[INFO] Curve anchors: {curve}", flush=True)
     return brackets
 
 
@@ -607,13 +812,19 @@ class SortedEmitter:
         if len(self._md_buffer) >= self.buffer_limit:
             self._send_buffer(self._md_buffer, "commodities_market_data")
 
-    def emit_trade(self, ts_ns, sym, exchange, commodity_class, side, price, size):
+    def emit_trade(self, ts_ns, sym, exchange, commodity_class, side, price, size,
+                   venue, counterparty, passive):
         self._tr_buffer.append({
             "ts": ts_ns,
-            "symbols": {"symbol": sym, "exchange": exchange, "commodity_class": commodity_class, "side": side},
+            "symbols": {
+                "symbol": sym, "exchange": exchange,
+                "commodity_class": commodity_class, "side": side,
+                "venue": venue, "counterparty": counterparty,
+            },
             "columns": {
                 "price": float(price),
                 "size": int(size),
+                "passive": bool(passive),
             },
         })
         if len(self._tr_buffer) >= self.buffer_limit:
@@ -732,11 +943,8 @@ def build_initial_state(symbols, brackets):
         tick = info["tick"]
         precision = info["precision"]
         spread = tick * 2
-        state[sym] = {
-            "bid": quantize_price(mid - spread / 2.0, tick, precision),
-            "ask": quantize_price(mid + spread / 2.0, tick, precision),
-            "spread": spread,
-        }
+        bid, ask = quantize_bbo(mid, spread, tick, precision)
+        state[sym] = {"bid": bid, "ask": ask, "spread": spread}
     return state
 
 
@@ -782,8 +990,7 @@ def evolve_open_close_for_second(symbols, brackets, prev_state, power_state=None
             5 * tick,
         )
 
-        bid = quantize_price(new_mid - spread / 2.0, tick, precision)
-        ask = quantize_price(new_mid + spread / 2.0, tick, precision)
+        bid, ask = quantize_bbo(new_mid, spread, tick, precision)
 
         open_state[sym] = {
             "bid": prev_state[sym]["bid"],
@@ -800,17 +1007,37 @@ def evolve_open_close_for_second(symbols, brackets, prev_state, power_state=None
 
         info = _SYM_INFO[deferred_sym]
         low, high = brackets[deferred_sym]
+        front_low, front_high = brackets[front_sym]
         tick = info["tick"]
         precision = info["precision"]
 
-        # Slow contango/backwardation drift
+        # The real curve basis: both brackets are centred on their anchor price,
+        # so the difference of their midpoints is the live contango (positive) or
+        # backwardation (negative) between these two delivery months. Gold comes
+        # out in contango and crude in backwardation, straight from the market.
+        real_basis = ((low + high) / 2.0) - ((front_low + front_high) / 2.0)
+
+        # Slow drift on top, so the spread breathes instead of being a constant.
+        # Scaled to the instrument's tick: +/-2.0 absolute is meaningless on gold.
         if deferred_sym not in _basis_offsets:
             _basis_offsets[deferred_sym] = 0.0
-        _basis_offsets[deferred_sym] += random.uniform(-0.002, 0.002)
-        _basis_offsets[deferred_sym] = clamp(_basis_offsets[deferred_sym], -2.0, 2.0)
+        _basis_offsets[deferred_sym] += random.uniform(-0.2 * tick, 0.2 * tick)
+        _basis_offsets[deferred_sym] = clamp(
+            _basis_offsets[deferred_sym], -20.0 * tick, 20.0 * tick
+        )
+
+        # The deferred rides the front, so its band has to be at least as wide as
+        # the front's swing. A backwardated curve has a cheaper deferred and thus
+        # a narrower +/-1% band, and clamping to that would pin it to its edges
+        # and flatten the very structure this is meant to show.
+        deferred_anchor = (low + high) / 2.0
+        half = 1.2 * max(high - deferred_anchor, (front_high - front_low) / 2.0)
 
         front_close_mid = (close_state[front_sym]["bid"] + close_state[front_sym]["ask"]) / 2.0
-        deferred_mid = clamp(front_close_mid + _basis_offsets[deferred_sym], low, high)
+        deferred_mid = clamp(
+            front_close_mid + real_basis + _basis_offsets[deferred_sym],
+            deferred_anchor - half, deferred_anchor + half,
+        )
 
         spread = clamp(
             prev_state[deferred_sym]["spread"] + random.uniform(-0.3 * tick, 0.3 * tick),
@@ -818,8 +1045,7 @@ def evolve_open_close_for_second(symbols, brackets, prev_state, power_state=None
             5 * tick,
         )
 
-        bid = quantize_price(deferred_mid - spread / 2.0, tick, precision)
-        ask = quantize_price(deferred_mid + spread / 2.0, tick, precision)
+        bid, ask = quantize_bbo(deferred_mid, spread, tick, precision)
 
         open_state[deferred_sym] = {
             "bid": prev_state[deferred_sym]["bid"],
@@ -866,6 +1092,7 @@ def generate_second(
     allow_trades: bool,
     is_settlement: bool = False,
     scale_factor: int = 1,
+    future_mid: Optional[dict] = None,
 ):
     # Prebuilt arrays for each depth
     prebuilt_bids = [
@@ -885,19 +1112,35 @@ def generate_second(
     total_weight = sum(rank_weights)
     norm_weights = [w / total_weight for w in rank_weights]
 
-    # Distribute md_events across symbols proportionally
-    md_per_sym = {}
-    remaining = md_events
-    for i, sym in enumerate(symbols):
-        count = int(round(md_events * norm_weights[i]))
-        count = min(count, remaining)
-        md_per_sym[sym] = max(1, count) if remaining > 0 else 0
-        remaining -= md_per_sym[sym]
-    # Distribute any leftover
-    while remaining > 0:
-        sym = random.choice(symbols)
-        md_per_sym[sym] += 1
-        remaining -= 1
+    # Distribute md_events across symbols proportionally.
+    #
+    # This has to be free of POSITIONAL bias. Walking the list and subtracting
+    # from a shared budget starves whatever sits at the tail once the budget runs
+    # out, which silently dropped the agriculture block (last in COMMODITIES)
+    # whenever the per-worker, per-second event count was low. Deterministic
+    # rounding has the same problem more subtly: the same low-weight symbols lose
+    # the rounding every second, so they never appear at all.
+    #
+    # Probabilistic rounding is unbiased in expectation and varies second to
+    # second, so a symbol whose share is 0.3 events/s shows up roughly 3 seconds
+    # in 10 rather than never.
+    md_per_sym = {sym: 0 for sym in symbols}
+    if md_events > 0:
+        raw = [md_events * w for w in norm_weights]
+        counts = [int(x) + (1 if random.random() < (x - int(x)) else 0) for x in raw]
+        # Reconcile back to exactly md_events, picking by weight either way.
+        idx = list(range(len(symbols)))
+        diff = md_events - sum(counts)
+        while diff > 0:
+            counts[random.choices(idx, weights=norm_weights, k=1)[0]] += 1
+            diff -= 1
+        while diff < 0:
+            i = random.choices(idx, weights=norm_weights, k=1)[0]
+            if counts[i] > 0:
+                counts[i] -= 1
+                diff += 1
+        for i, sym in enumerate(symbols):
+            md_per_sym[sym] = counts[i]
 
     total_md = sum(md_per_sym.values())
 
@@ -939,8 +1182,12 @@ def generate_second(
             mid_bid = ob["bid"] + frac * (cb["bid"] - ob["bid"])
             mid_ask = ob["ask"] + frac * (cb["ask"] - ob["ask"])
 
+            # Interpolating the two sides independently can land them on the same
+            # tick, so enforce a one-tick minimum here too, not just in evolve().
             best_bid = quantize_price(mid_bid, tick, precision)
             best_ask = quantize_price(mid_ask, tick, precision)
+            if best_ask <= best_bid:
+                best_ask = round(best_bid + tick, precision)
 
             levels = random.randint(min_levels, max_levels)
             bids = prebuilt_bids[levels - 1]
@@ -973,10 +1220,46 @@ def generate_second(
             best_ask = ob["ask"] + frac * (cb["ask"] - ob["ask"])
 
             mid = (best_bid + best_ask) / 2.0
-            slip = random.uniform(-0.15 * tick, 0.15 * tick)
-            price = quantize_price(clamp(mid + slip, best_bid, best_ask), tick, precision)
 
-            side = "B" if random.random() < 0.5 else "S"
+            counterparty = random.choices(
+                COUNTERPARTY_NAMES, weights=COUNTERPARTY_WEIGHTS, k=1
+            )[0]
+            cp = _CPTY_INFO[counterparty]
+            venue = pick_venue(exchange)
+            vinfo = _VENUE_INFO[venue]
+
+            # Adverse selection. future_mid is the mid one markout horizon ahead
+            # (known in both modes: faster-than-life precomputes the whole plan,
+            # real-time keeps a rolling lookahead). An informed counterparty
+            # takes the side that the market is about to validate; an uninformed
+            # one takes the side it is about to regret. Everything else is a
+            # coin flip, and so is any trade where the market does not move.
+            side = None
+            edge = cp["toxicity"] * vinfo["tox_mult"]
+            if future_mid is not None and edge != 0.0:
+                fm = future_mid.get(sym)
+                if fm is not None and abs(fm - mid) > 0.5 * tick:
+                    if random.random() < abs(edge):
+                        rising = fm > mid
+                        informed = edge > 0
+                        # informed buys into strength, uninformed sells into it
+                        side = "B" if (rising == informed) else "S"
+            if side is None:
+                side = "B" if random.random() < 0.5 else "S"
+
+            # Aggressive tickets lift the offer or hit the bid; passive ones rest
+            # and get filled at the touch. Venue spread_mult widens the print,
+            # and RFQ/voice are allowed to trade through the touch.
+            passive = random.random() >= cp["aggressive"]
+            half_spread = max((best_ask - best_bid) / 2.0, tick / 2.0)
+            offset = half_spread * vinfo["spread_mult"]
+            if passive:
+                offset *= 0.35
+            raw = mid + offset if side == "B" else mid - offset
+            raw += random.uniform(-0.15 * tick, 0.15 * tick)
+            if not vinfo["outside"]:
+                raw = clamp(raw, best_bid, best_ask)
+            price = quantize_price(raw, tick, precision)
 
             # Trade size distribution (lots)
             r = random.random()
@@ -988,7 +1271,8 @@ def generate_second(
                 size = random.randint(100, 500)
 
             emitter.emit_trade(
-                ts_ns_base + ofs, sym, exchange, commodity_class, side, price, size
+                ts_ns_base + ofs, sym, exchange, commodity_class, side, price, size,
+                venue, counterparty, passive,
             )
 
     # Settlements (emitted at settlement time, ~21 non-deferred symbols)
@@ -1109,7 +1393,8 @@ def ingest_worker(
         sec_idx = 0
         wall_start = time.time() if args.mode == "real-time" else None
         last_yf_refresh = time.time()
-        last_settlement_day = None
+        horizon_s = max(1, args.toxicity_horizon_s)
+        lookahead = deque()
 
         while True:
             if end_ns is not None and ts >= end_ns:
@@ -1146,14 +1431,24 @@ def ingest_worker(
             md_events = int(md_events * args.scale_factor)
             tr_events = int(tr_events * args.scale_factor)
 
-            # Settlement check (once per simulated day, regardless of pacing)
-            tzinfo = ZoneInfo(args.session_tz)
-            dt_local = datetime.datetime.fromtimestamp(ts / 1e9, tzinfo)
-            today_str = dt_local.strftime("%Y-%m-%d")
+            # Settlement check: exactly once per simulated day.
+            #
+            # This must be STATELESS. Any "have I already done today?" flag lives
+            # in the worker, and faster-than-life re-invokes the worker once per
+            # chunk, so the flag resets mid-day: the original version fired on the
+            # first second each worker saw (33 settlements/symbol/day across 3
+            # processes and 11 chunks), and a day-flag version still fired twice
+            # whenever the 5-minute settlement window straddled a 15-minute chunk
+            # boundary.
+            #
+            # The rising edge of the settlement phase is a pure function of the
+            # timestamp, so it occurs exactly once per day no matter how the run
+            # is sharded. Restricting it to worker 0 keeps it once, not once each.
             is_settlement = False
-            if last_settlement_day != today_str:
-                is_settlement = True
-                last_settlement_day = today_str
+            if process_idx == 0:
+                cur_phase = commodity_session_phase(ts, args.session_tz)
+                prev_phase = commodity_session_phase(ts - 1_000_000_000, args.session_tz)
+                is_settlement = (cur_phase == "settlement" and prev_phase != "settlement")
 
             # Session pacing
             if not args.session_pacing:
@@ -1208,7 +1503,10 @@ def ingest_worker(
 
             wait_if_paused(pause_event, process_idx)
 
-            # Choose open/close state
+            # Choose open/close state, plus the mid one markout horizon ahead so
+            # informed counterparties can be informed. Faster-than-life reads it
+            # straight out of the precomputed plan; real-time keeps a rolling
+            # lookahead of already-decided seconds and emits from its front.
             if (
                 args.mode == "faster-than-life"
                 and per_second_plan is not None
@@ -1220,10 +1518,27 @@ def ingest_worker(
                     break
                 open_state = open_per_second[sec_idx]
                 close_state = close_per_second[sec_idx]
+                ahead = min(sec_idx + horizon_s, len(close_per_second) - 1)
+                future_state = close_per_second[ahead]
             else:
-                open_state, close_state, init_state = evolve_open_close_for_second(
+                if not lookahead:
+                    # Prime the buffer: evolve horizon+1 seconds up front.
+                    for _ in range(horizon_s + 1):
+                        o, c, init_state = evolve_open_close_for_second(
+                            symbols, local_brackets, init_state, power_state
+                        )
+                        lookahead.append((o, c))
+                open_state, close_state = lookahead.popleft()
+                o, c, init_state = evolve_open_close_for_second(
                     symbols, local_brackets, init_state, power_state
                 )
+                lookahead.append((o, c))
+                future_state = lookahead[-1][1]
+
+            future_mid = {
+                s: (future_state[s]["bid"] + future_state[s]["ask"]) / 2.0
+                for s in symbols
+            } if future_state is not None else None
 
             generate_second(
                 ts_ns_base=ts,
@@ -1239,6 +1554,7 @@ def ingest_worker(
                 allow_trades=allow_trades,
                 is_settlement=is_settlement,
                 scale_factor=args.scale_factor,
+                future_mid=future_mid,
             )
 
             ts += int(1e9)
@@ -1293,7 +1609,7 @@ def main():
     p.add_argument("--store_forward_dir",
                    default=os.path.join(tempfile.gettempdir(), "commodities_qwp_sf"),
                    help="Base dir for per-worker store-and-forward spill; each worker "
-                        "gets a <dir>/commodities-<idx> subdir, created if absent.")
+                        "gets a <dir>/commodities-<idx> subdir.")
     p.add_argument("--enterprise", type=lambda x: str(x).lower() == "true", default=False,
                    help="Enterprise server: tables take a STORAGE POLICY rather than a "
                         "TTL. Materialized views take a TTL on both editions.")
@@ -1328,6 +1644,10 @@ def main():
                    help="Max seconds to precompute at once in faster-than-life mode")
     p.add_argument("--eia_api_key", type=str, default=None,
                    help="Optional EIA API key for higher rate limits")
+    p.add_argument("--toxicity_horizon_s", type=int, default=60,
+                   help="Lookahead in seconds used to decide informed vs uninformed "
+                        "counterparty flow. Markouts out to roughly this horizon "
+                        "carry signal; beyond it the edge decays to noise.")
 
     args = p.parse_args()
     prefix = args.prefix

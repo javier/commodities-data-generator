@@ -1,6 +1,11 @@
 __pycache__/
 *.pyc
 .env
+.DS_Store
+# Never commit credentials: the QWP bearer token is read from a file at runtime.
+*token*.txt
+*.pem
+*.der
 *.egg-info/
 dist/
 build/
