@@ -482,6 +482,23 @@ so 8812 still needs to be reachable from Grafana.
 Gold-first dashboard covering the precious metals curve and execution quality.
 Symbol dropdown defaults to `GC`.
 
+![Metals curve and execution quality dashboard](assets/metals-tca-dashboard.png)
+
+Top left is the gold strip in contango, each leg anchored to a real COMEX
+contract month, so the spacing between the lines is the actual market carry.
+Below it, the 12-month basis in dollars per ounce. The counterparty scorecard
+ranks informed flow against hedger flow by 60-second markout.
+
+The markout decay curve beside it is the one to look at: informed flow starts
+**negative**, because it crosses the spread to get filled, then turns sharply
+positive as the information plays out and peaks near the horizon. Hedger flow
+just keeps decaying in our favour.
+
+Lower down, VWAP and TWAP track each other so closely on a price axis that the
+divergence between them is plotted separately in basis points on the right-hand
+axis, and the order book depth chart shows cumulative bid and ask volume either
+side of the mid.
+
 **Precious Metals Term Structure**
 
 | Panel | Description |
