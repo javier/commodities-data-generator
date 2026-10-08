@@ -7,17 +7,19 @@
 #
 # Tables created (nothing else is touched), all prefixed energy_ so they cannot
 # collide with the FX or commodities datasets:
-#   energy_instruments, energy_limits, energy_quotes, energy_curve_marks,
+#   energy_instruments, energy_listings, energy_limits, energy_quotes, energy_curve_marks,
 #   energy_settlements, energy_iv_marks, energy_model_prices, energy_da_prices,
 #   energy_fills, energy_trade_events, energy_position_snapshots, energy_demo_events
 #   energy_quotes_1m / _5m / _1d, energy_curve_marks_1h        (materialized views)
-#   energy_positions_live                                       (live view, beta)
+#   energy_positions_live, energy_positions_live_by_venue      (live views, beta)
 #   energy_ledger, energy_curve_marks_latest, energy_trade_events_latest,
-#   energy_tenors                                               (views)
+#   energy_tenors, energy_instrument_master                     (views)
 #
-# If the cluster already holds an energy_instruments table from before the
-# symbology columns were added, drop it once (and energy_tenors with it): the
-# generator refuses to write into a table whose schema differs from its own.
+# If the cluster already holds energy_ objects from before the listings change
+# (instruments, limits, curve_marks, position_snapshots and quotes_1m all changed
+# shape), drop every energy_ view, live view, materialized view and table once,
+# by name, then run this: the generator refuses to write into a table whose
+# schema differs from its own.
 #
 # Every table is WAL with per-column Parquet encodings, so the cluster's storage
 # policy produces compact cold partitions. NOTE ON RETENTION: --short_ttl is
@@ -27,7 +29,7 @@
 # simply persists; tiering is then a matter of the cluster's own policies.
 #
 # This is a CORRECTNESS run, not a throughput run. The scale factor is kept
-# modest on purpose for the gp3 volume: 0.5 is roughly 20M quotes a day, which is
+# modest on purpose for the gp3 volume: 0.5 is roughly 35M quotes a weekday, which is
 # enough for every cell in the query pack and for the markouts to converge.
 set -euo pipefail
 

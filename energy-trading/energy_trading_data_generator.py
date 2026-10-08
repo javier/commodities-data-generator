@@ -99,64 +99,103 @@ GAS_EF = 0.2                # tCO2 per MWh of gas burned
 # Universe
 # ----------------------------
 
-# curve: complex, unit, ccy, px_factor, fx_symbol, to_mwh, exchange, tz, n_months,
-#        strips, tick, front_tick_rate (quotes/s at full activity, rank 0),
-#        base_spread_ticks (front), max_spread_ticks, display precision,
-#        exchange product code.
+# curve: complex, unit, ccy, px_factor, fx_symbol, to_mwh, primary exchange, tz,
+#        n_months, strips, tick, front_tick_rate (quotes/s at full activity, rank
+#        0), base_spread_ticks (front), max_spread_ticks, display precision.
 #
-# Venues and product codes are the exchanges' own, checked on their product
-# pages on 2026-10-08: ICE Futures Europe (MIC IFEU) for Brent BRN, Low
-# Sulphur Gasoil G, UK NBP gas GWM, JKM LNG (Platts) JKM, UK Base Electricity
-# (Gregorian) UBL and UKA futures UKA; ICE Endex (MIC NDEX) for Dutch TTF gas
-# TFM and EUA futures ECF; CME NYMEX for WTI CL.
+# An instrument (one row here per contract) is the risk object: one fair value,
+# one position for risk and PnL. Where it trades is a listing (LISTINGS below).
 CURVES = {
     "BRENT":  dict(complex="OIL",    unit="bbl",   ccy="USD", px_factor=1.0,  fx=None,     to_mwh=None,
                    exchange="ICE", tz="UTC", n_months=24, strips=False, tick=0.01,
-                   front_rate=180.0, spread_ticks=1.0, max_spread_ticks=12.0, precision=2,
-                   code="BRN"),
+                   front_rate=180.0, spread_ticks=1.0, max_spread_ticks=12.0, precision=2),
     "WTI":    dict(complex="OIL",    unit="bbl",   ccy="USD", px_factor=1.0,  fx=None,     to_mwh=None,
                    exchange="CME", tz="UTC", n_months=24, strips=False, tick=0.01,
-                   front_rate=150.0, spread_ticks=1.0, max_spread_ticks=12.0, precision=2,
-                   code="CL"),
+                   front_rate=150.0, spread_ticks=1.0, max_spread_ticks=12.0, precision=2),
     "GASOIL": dict(complex="OIL",    unit="t",     ccy="USD", px_factor=1.0,  fx=None,     to_mwh=None,
                    exchange="ICE", tz="UTC", n_months=18, strips=False, tick=0.25,
-                   front_rate=40.0, spread_ticks=1.0, max_spread_ticks=12.0, precision=2,
-                   code="G"),
+                   front_rate=40.0, spread_ticks=1.0, max_spread_ticks=12.0, precision=2),
     "TTF":    dict(complex="GAS",    unit="MWh",   ccy="EUR", px_factor=1.0,  fx="EURUSD", to_mwh=1.0,
                    exchange="ICE_ENDEX", tz="Europe/Amsterdam", n_months=38, strips=True, tick=0.005,
-                   front_rate=120.0, spread_ticks=3.0, max_spread_ticks=12.0, precision=3,
-                   code="TFM"),
+                   front_rate=120.0, spread_ticks=3.0, max_spread_ticks=12.0, precision=3),
     "NBP":    dict(complex="GAS",    unit="therm", ccy="GBP", px_factor=0.01, fx="GBPUSD", to_mwh=THERM_MWH,
                    exchange="ICE", tz="Europe/London", n_months=38, strips=True, tick=0.005,
-                   front_rate=50.0, spread_ticks=3.0, max_spread_ticks=12.0, precision=3,
-                   code="GWM"),
+                   front_rate=50.0, spread_ticks=3.0, max_spread_ticks=12.0, precision=3),
     # JKM ticks in tenths of a cent; the screen spread is a few cents wide.
     "JKM":    dict(complex="LNG",    unit="MMBtu", ccy="USD", px_factor=1.0,  fx=None,     to_mwh=1.0 / MMBTU_PER_MWH,
                    exchange="ICE", tz="UTC", n_months=12, strips=False, tick=0.001,
-                   front_rate=10.0, spread_ticks=20.0, max_spread_ticks=60.0, precision=3,
-                   code="JKM"),
+                   front_rate=10.0, spread_ticks=20.0, max_spread_ticks=60.0, precision=3),
     "UKPWR":  dict(complex="POWER",  unit="MWh",   ccy="GBP", px_factor=1.0,  fx="GBPUSD", to_mwh=1.0,
                    exchange="ICE", tz="Europe/London", n_months=38, strips=True, tick=0.01,
-                   front_rate=30.0, spread_ticks=3.0, max_spread_ticks=12.0, precision=2,
-                   code="UBL"),
+                   front_rate=30.0, spread_ticks=3.0, max_spread_ticks=12.0, precision=2),
     "EUA":    dict(complex="CARBON", unit="tCO2",  ccy="EUR", px_factor=1.0,  fx="EURUSD", to_mwh=None,
                    exchange="ICE_ENDEX", tz="UTC", n_months=0, strips=False, tick=0.01,
-                   front_rate=60.0, spread_ticks=1.0, max_spread_ticks=12.0, precision=2,
-                   code="ECF"),
+                   front_rate=60.0, spread_ticks=1.0, max_spread_ticks=12.0, precision=2),
     "UKA":    dict(complex="CARBON", unit="tCO2",  ccy="GBP", px_factor=1.0,  fx="GBPUSD", to_mwh=None,
                    exchange="ICE", tz="UTC", n_months=0, strips=False, tick=0.01,
-                   front_rate=10.0, spread_ticks=2.0, max_spread_ticks=12.0, precision=2,
-                   code="UKA"),
+                   front_rate=10.0, spread_ticks=2.0, max_spread_ticks=12.0, precision=2),
 }
 CARBON_YEARS = (2026, 2027, 2028)
 FX_PAIRS = ["EURUSD", "GBPUSD", "EURGBP"]
 FX_TICK_RATE = 8.0
 
-# ICE Endex contracts clear at ICE Clear Europe, like ICE Futures Europe ones.
-CCP = {"ICE": "ICE_CLEAR_EU", "ICE_ENDEX": "ICE_CLEAR_EU", "CME": "CME_CLEARING"}
-STRIP_SOURCE = {"GAS": "BROKER_A", "POWER": "BROKER_B", "LNG": "BROKER_A"}
-# The planted feed outage (8.9) drops the whole ICE Endex quote feed: TTF and EUA.
-OUTAGE_EXCHANGE = "ICE_ENDEX"
+# Where each curve trades, primary venue first. Codes are the exchanges' own,
+# checked on 2026-10-08:
+# - ICE, from ICE's product code list (ice.com/api/productguide/info/codes/all/csv):
+#   the contract symbol is built from the LOGICAL code; the one-letter PHYSICAL
+#   code is kept separately. Brent BRN / B, Low Sulphur Gasoil ULS / G, UK NBP
+#   gas GWM / M, JKM LNG (Platts) JKM, UK Base Electricity (Gregorian) UBL, UKA
+#   futures UKA (ICE Futures Europe, MIC IFEU); Dutch TTF gas TFM and EUA
+#   futures ECF / C (ICE Endex, MIC NDEX).
+# - EEX, from EEX's product short-code list: TTF Natural Gas Month / Quarter /
+#   Season / Year Futures G3BM / G3BQ / G3BS / G3BY, EUA Future FEUA, GB Power
+#   Base Month / Quarter / Season / Year Futures FUBM / FUBQ / FUBS / FUBY
+#   (MIC XEEE, cleared at ECC). Lot and tick match the ICE contracts: 1 MW x
+#   hours and EUR 0.005 for TTF, 1 MW x hours and GBP 0.01 for GB power,
+#   1,000 allowances and EUR 0.01 for EUA.
+# - CME NYMEX, WTI CL (MIC XNYM).
+# EEX product codes are per granularity, hence the dict.
+VENUES = {
+    "ICE":       dict(mic="IFEU", ccp="ICE_CLEAR_EU"),
+    "ICE_ENDEX": dict(mic="NDEX", ccp="ICE_CLEAR_EU"),
+    "EEX":       dict(mic="XEEE", ccp="ECC"),
+    "CME":       dict(mic="XNYM", ccp="CME_CLEARING"),
+}
+LISTINGS = {
+    "BRENT":  [("ICE", "BRN", "B")],
+    "WTI":    [("CME", "CL", "CL")],
+    "GASOIL": [("ICE", "ULS", "G")],
+    "TTF":    [("ICE_ENDEX", "TFM", "TFM"),
+               ("EEX", dict(M="G3BM", Q="G3BQ", S="G3BS", Y="G3BY"), None)],
+    "NBP":    [("ICE", "GWM", "M")],
+    "JKM":    [("ICE", "JKM", "JKM")],
+    "UKPWR":  [("ICE", "UBL", "UBL"),
+               ("EEX", dict(M="FUBM", Q="FUBQ", S="FUBS", Y="FUBY"), None)],
+    "EUA":    [("ICE_ENDEX", "ECF", "C"),
+               ("EEX", dict(Z="FEUA"), None)],
+    "UKA":    [("ICE", "UKA", "UKA")],
+}
+# Expected share of the desk's screen fills on the secondary venue: higher on
+# strips, which is where a second venue picks up business.
+SECONDARY_SHARE = {"M": 0.2, "Z": 0.2, "Q": 0.3, "S": 0.3, "Y": 0.3}
+# The secondary venue's book relative to the primary's.
+SECONDARY_RATE = 0.4          # tick rate
+SECONDARY_SIZE = 0.5          # displayed size
+SECONDARY_SPREAD = (1.5, 2.0) # spread multiplier range, drawn per listing
+SECONDARY_LAG_S = (0.05, 0.3) # quote lag behind fair value, drawn per tick
+SECONDARY_BASIS_TICKS = 0.3   # amplitude of the slow cross-venue basis
+# Planted cross-venue divergences on dual-listed front months, European hours.
+DIVERGENCE_PER_HOUR = 1.0 / 3.0
+DIVERGENCE_TICKS = (2, 4)
+DIVERGENCE_SECS = (5, 30)
+# Fill routing: weight multipliers on a venue where the book holds the opposite
+# side (closing there saves margin) and on the venue with the better touch.
+CLOSING_BONUS = 2.0
+TOUCH_BONUS = 1.5
+CCP = {v: d["ccp"] for v, d in VENUES.items()}
+OTC_VENUE = "OTC"             # venue of positions that come from broker and bilateral deals
+# The planted feed outage (8.9) silences the EEX quote feed; ICE keeps ticking.
+OUTAGE_EXCHANGE = "EEX"
 
 # Futures month codes, industry-wide.
 MONTH_CODE = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
@@ -164,24 +203,66 @@ MONTH_CODE = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
 TERM_CODE = {"M": "M", "Z": "M", "Q": "Q", "S": "S", "Y": "Y"}
 
 
-def exchange_symbol(curve: str, gran: str, ys: int, ms: int, ye: int, me: int) -> str:
-    """The contract's name in its exchange's own format.
+def exchange_symbol(exchange: str, code: str, gran: str, ys: int, ms: int, ye: int, me: int) -> str:
+    """A listing's contract name in its exchange's own format.
 
-    ICE (Futures Europe and Endex): product code left-justified to four
+    ICE (Futures Europe and Endex): logical product code left-justified to four
     characters, F for futures, the term letter, the month code, 00 for the whole
     period, the two-digit year, and for seasons a '.' switch followed by the
     last delivery month (ICE's own example: GWM FSV0007.H0008 is the winter
-    2007 NBP strip). CME: root, month code, two-digit year (CLF27).
+    2007 NBP strip). CME: root, month code, two-digit year (CLF27). EEX
+    identifies a contract by product code plus expiry year and month (separate
+    fields in its contract details file); they are joined here for display,
+    with the first delivery month (G3BM 2027-01).
     """
-    c = CURVES[curve]
     mc, yy = MONTH_CODE[ms], ys % 100
-    if c["exchange"] == "CME":
-        return f"{c['code']}{mc}{yy:02d}"
-    sym = f"{c['code']:<4}F{TERM_CODE[gran]}{mc}00{yy:02d}"
+    if exchange == "CME":
+        return f"{code}{mc}{yy:02d}"
+    if exchange == "EEX":
+        return f"{code} {ys:04d}-{ms:02d}"
+    sym = f"{code:<4}F{TERM_CODE[gran]}{mc}00{yy:02d}"
     if gran == "S":
         ly, lm = madd(ye, me, -1)
         sym += f".{MONTH_CODE[lm]}00{ly % 100:02d}"
     return sym
+
+
+def build_listings(inst: pd.DataFrame, seed: int) -> pd.DataFrame:
+    """One row per (instrument, venue). Primary venue first; the secondary
+    venue's spread multiplier and basis phases are drawn once per listing."""
+    r = np.random.default_rng([seed, 17])
+    rows = []
+    for i, x in enumerate(inst.itertuples()):
+        venues = LISTINGS[x.curve]
+        dual = len(venues) > 1
+        ys, ms = x.delivery_start.year, x.delivery_start.month
+        ye, me = x.delivery_end.year, x.delivery_end.month
+        for k, (exch, code, phys) in enumerate(venues):
+            c = code[x.granularity] if isinstance(code, dict) else code
+            primary = k == 0
+            share = 1.0 if not dual else (1.0 - SECONDARY_SHARE[x.granularity] if primary
+                                          else SECONDARY_SHARE[x.granularity])
+            rows.append(dict(
+                ci=i, symbol=x.symbol, curve=x.curve, granularity=x.granularity, rank=x.rank,
+                exchange=exch, mic=VENUES[exch]["mic"], exchange_code=c, exchange_physical_code=phys,
+                exchange_symbol=exchange_symbol(exch, c, x.granularity, ys, ms, ye, me),
+                ccp=VENUES[exch]["ccp"], lot_size=x.lot_size, tick_size=x.tick_size,
+                is_primary=primary, liquidity_share=share,
+                rate_mult=1.0 if primary else SECONDARY_RATE,
+                size_mult=1.0 if primary else SECONDARY_SIZE,
+                spread_mult=1.0 if primary else float(r.uniform(*SECONDARY_SPREAD)),
+                basis_amp=0.0 if primary else SECONDARY_BASIS_TICKS * x.tick_size,
+                basis_ph1=float(r.uniform(0, 2 * math.pi)), basis_ph2=float(r.uniform(0, 2 * math.pi)),
+                basis_p1=float(r.uniform(2, 4)) * 3600.0, basis_p2=float(r.uniform(20, 40)) * 60.0,
+                divergent=(not primary) and x.granularity in ("M", "Z") and int(x.rank) == 0,
+            ))
+    df = pd.DataFrame(rows)
+    # Bars (quotes_1m and up) are built from primary-venue quotes by exchange, so
+    # no exchange may be primary for one curve and secondary for another.
+    prim = set(df[df.is_primary].exchange)
+    sec = set(df[~df.is_primary].exchange)
+    assert not (prim & sec), f"exchanges both primary and secondary: {prim & sec}"
+    return df
 
 
 # Seasonal shape by delivery month (index 0 = Jan). Oil and carbon are flat.
@@ -267,7 +348,7 @@ COUNTERPARTIES = (
     + [(f"INDUSTRIAL_{i:02d}", -0.3) for i in range(1, 9)]
 )
 
-ALL_TABLES = ["instruments", "limits", "quotes", "curve_marks", "settlements", "iv_marks",
+ALL_TABLES = ["instruments", "listings", "limits", "quotes", "curve_marks", "settlements", "iv_marks",
               "model_prices", "da_prices", "fills", "trade_events", "position_snapshots",
               "demo_events"]
 
@@ -390,11 +471,10 @@ def build_instruments(day0: datetime.datetime) -> pd.DataFrame:
         else:
             lot = 1000.0
         rows.append(dict(
-            symbol=f"{curve}_{label}", exchange_symbol=exchange_symbol(curve, gran, ys, ms, ye, me),
-            curve=curve, complex=cx, granularity=gran,
+            symbol=f"{curve}_{label}", curve=curve, complex=cx, granularity=gran,
             delivery_start=start.replace(tzinfo=None), delivery_end=end.replace(tzinfo=None),
             hours=hours, days=days, expiry=expiry.replace(tzinfo=None), exchange=c["exchange"],
-            exchange_code=c["code"], term_code=TERM_CODE[gran], month_code=MONTH_CODE[ms],
+            term_code=TERM_CODE[gran], month_code=MONTH_CODE[ms],
             unit=c["unit"], ccy=c["ccy"], px_factor=c["px_factor"], fx_symbol=c["fx"],
             to_mwh=c["to_mwh"], lot_size=lot, tick_size=c["tick"], moy=ms, months=months or [],
         ))
@@ -457,8 +537,6 @@ def build_instruments(day0: datetime.datetime) -> pd.DataFrame:
             spread[i] = c["spread_ticks"] + 3.0 + 0.8 * k
     df["tick_rate"] = rate
     df["spread_ticks"] = np.minimum(spread, [CURVES[c]["max_spread_ticks"] for c in df.curve])
-    df["source"] = [r.exchange if r.granularity in ("M", "Z") else STRIP_SOURCE[r.complex]
-                    for r in df.itertuples()]
     return df.reset_index(drop=True)
 
 
@@ -648,15 +726,14 @@ def table_ddl(args, prefix: str) -> dict:
     t = lambda n: table_name(n, prefix)
     ddl = {}
 
-    # One row per tradable contract. Reference data: ts is the epoch, DEDUP
-    # turns a re-run into an upsert. Two names per contract: symbol is the
-    # desk's readable id, exchange_symbol the exchange's own contract name
-    # (ICE / CME format). ts (the epoch) is the last column so SELECT * does
-    # not lead with 1970.
+    # One row per instrument: the risk object (one fair value, one position
+    # for risk and PnL), identified by the desk's readable symbol. Where it
+    # trades lives in listings. Reference data: ts is the epoch and the last
+    # column, so SELECT * does not lead with 1970; DEDUP turns a re-run into
+    # an upsert. term_code and month_code describe the delivery period.
     ddl["instruments"] = f"""
     CREATE TABLE IF NOT EXISTS {t("instruments")} (
       symbol         SYMBOL CAPACITY 2048{SYM},
-      exchange_symbol VARCHAR{DEF},
       curve          SYMBOL CAPACITY 32{SYML},
       complex        SYMBOL CAPACITY 8{SYML},
       granularity    SYMBOL CAPACITY 8{SYML},
@@ -665,8 +742,6 @@ def table_ddl(args, prefix: str) -> dict:
       hours          INT{DEF},
       days           INT{DEF},
       expiry         TIMESTAMP{TS},
-      exchange       SYMBOL CAPACITY 8{SYML},
-      exchange_code  SYMBOL CAPACITY 16{SYML},
       term_code      SYMBOL CAPACITY 8{SYML},
       month_code     SYMBOL CAPACITY 16{SYML},
       unit           SYMBOL CAPACITY 8{SYML},
@@ -674,22 +749,43 @@ def table_ddl(args, prefix: str) -> dict:
       px_factor      DOUBLE{DEF},
       fx_symbol      SYMBOL CAPACITY 4{SYML},
       to_mwh         DOUBLE{DEF},
-      lot_size       DOUBLE{DEF},
-      tick_size      DOUBLE{DEF},
       ts             TIMESTAMP{TS}
     ) TIMESTAMP(ts) PARTITION BY YEAR WAL
       DEDUP UPSERT KEYS(ts, symbol)"""
+
+    # One row per listing: an instrument on a venue. exchange_symbol is the
+    # contract's name on that exchange, exchange_code the (logical) product
+    # code it is built from, exchange_physical_code ICE's one-letter clearing
+    # code where it differs. Fills reference a listing through (symbol, venue),
+    # quotes through (symbol, source). liquidity_share is the expected share
+    # of the desk's screen fills per venue and sums to 1 per symbol.
+    ddl["listings"] = f"""
+    CREATE TABLE IF NOT EXISTS {t("listings")} (
+      symbol                 SYMBOL CAPACITY 2048{SYM},
+      exchange               SYMBOL CAPACITY 8{SYML},
+      mic                    SYMBOL CAPACITY 8{SYML},
+      exchange_code          SYMBOL CAPACITY 32{SYML},
+      exchange_physical_code SYMBOL CAPACITY 32{SYML},
+      exchange_symbol        VARCHAR{DEF},
+      ccp                    SYMBOL CAPACITY 8{SYML},
+      lot_size               DOUBLE{DEF},
+      tick_size              DOUBLE{DEF},
+      is_primary             BOOLEAN{DEF},
+      liquidity_share        DOUBLE{DEF},
+      ts                     TIMESTAMP{TS}
+    ) TIMESTAMP(ts) PARTITION BY YEAR WAL
+      DEDUP UPSERT KEYS(ts, symbol, exchange)"""
 
     # Position limits per book and curve, in delivery units. A limit change is
     # a new row with a later effective ts; the old one stays for audit.
     ddl["limits"] = f"""
     CREATE TABLE IF NOT EXISTS {t("limits")} (
-      ts          TIMESTAMP{TS},
       book        SYMBOL CAPACITY 16{SYML},
       curve       SYMBOL CAPACITY 32{SYML},
       max_abs_qty DOUBLE{DEF},
       unit        SYMBOL CAPACITY 8{SYML},
-      approved_by SYMBOL CAPACITY 16{SYML}
+      approved_by SYMBOL CAPACITY 16{SYML},
+      ts          TIMESTAMP{TS}
     ) TIMESTAMP(ts) PARTITION BY YEAR WAL
       DEDUP UPSERT KEYS(ts, book, curve)"""
 
@@ -708,7 +804,8 @@ def table_ddl(args, prefix: str) -> dict:
       DEDUP UPSERT KEYS(ts, symbol, source)"""
 
     # Curve builder output: every contract on every curve, once a minute.
-    # Corrections are new rows with version + 1 and the same ts.
+    # Corrections are new rows with version + 1 and the same ts. venue is the
+    # listing a MARKET mark came from (null for INTERP), for lineage.
     ddl["curve_marks"] = f"""
     CREATE TABLE IF NOT EXISTS {t("curve_marks")} (
       ts        TIMESTAMP{TS},
@@ -716,6 +813,7 @@ def table_ddl(args, prefix: str) -> dict:
       symbol    SYMBOL CAPACITY 2048{SYM},
       price     DOUBLE{DEF},
       source    SYMBOL CAPACITY 16{SYML},
+      venue     SYMBOL CAPACITY 8{SYML},
       version   INT{DEF},
       marked_by SYMBOL CAPACITY 16{SYML}
     ) TIMESTAMP(ts) PARTITION BY DAY{ret_d} WAL
@@ -812,18 +910,21 @@ def table_ddl(args, prefix: str) -> dict:
     ) TIMESTAMP(booked_ts) PARTITION BY DAY{ret_d} WAL
       DEDUP UPSERT KEYS(booked_ts, trade_id, version)"""
 
-    # End-of-day positions per book and contract at 00:00 UTC, at settlement.
+    # End-of-day positions per book, contract and venue at 00:00 UTC, at
+    # settlement. Risk sums over venue; margin groups by it. Positions from
+    # broker and bilateral deals carry the venue OTC.
     ddl["position_snapshots"] = f"""
     CREATE TABLE IF NOT EXISTS {t("position_snapshots")} (
       ts        TIMESTAMP{TS},
       book      SYMBOL CAPACITY 16{SYML},
       symbol    SYMBOL CAPACITY 2048{SYM},
       curve     SYMBOL CAPACITY 32{SYML},
+      venue     SYMBOL CAPACITY 8{SYML},
       qty       DOUBLE{DEF},
       settle_px DOUBLE{DEF},
       source    SYMBOL CAPACITY 16{SYML}
     ) TIMESTAMP(ts) PARTITION BY MONTH{ret_m} WAL
-      DEDUP UPSERT KEYS(ts, book, symbol)"""
+      DEDUP UPSERT KEYS(ts, book, symbol, venue)"""
 
     # What the generator planted and when: the presenter's cheat sheet.
     ddl["demo_events"] = f"""
@@ -894,6 +995,11 @@ def ensure_tables_and_views(args, prefix: str):
 
         if args.create_views and has("quotes"):
             # 1-minute bars on mid: realised vol, the PnL curve, the charts.
+            # Built from the primary venue's quotes (and FX), so a bar is one
+            # book, not a mix of two venues' spreads; the secondary venue is
+            # read from ticks (5f, 7d). No exchange is primary for one curve and
+            # secondary for another, which build_listings asserts.
+            primaries = ", ".join(f"'{e}'" for e in sorted({v[0][0] for v in LISTINGS.values()} | {"FX_FEED"}))
             conn.execute(f"""
             CREATE MATERIALIZED VIEW IF NOT EXISTS {t("quotes_1m")} AS (
               SELECT ts, symbol, curve,
@@ -905,6 +1011,7 @@ def ensure_tables_and_views(args, prefix: str):
                      last(ask)            AS last_ask,
                      count()              AS ticks
               FROM {t("quotes")}
+              WHERE source IN ({primaries})
               SAMPLE BY 1m
             ) PARTITION BY DAY{ttl_d}""")
             # 5-minute bars, the standard grid for realised variance.
@@ -959,6 +1066,19 @@ def ensure_tables_and_views(args, prefix: str):
             except QuestDBError as e:
                 print(f"[DDL] Live view {t('positions_live')} not created, server said: {e}. "
                       f"Use the window-function twins in the query pack.", flush=True)
+            # The same per venue: margin is per clearing house, risk is not.
+            try:
+                conn.execute(f"""
+                CREATE LIVE VIEW IF NOT EXISTS {t("positions_live_by_venue")} FLUSH EVERY 1s START FROM BEGINNING AS
+                SELECT ts, book, symbol, curve, venue,
+                       sum(qty)      OVER w AS pos,
+                       sum(qty * px) OVER w AS cost
+                FROM {t("fills")}
+                WINDOW w AS (PARTITION BY book, symbol, venue ORDER BY ts ANCHOR DAILY '00:00')""")
+                print(f"[DDL] Live view ready: {t('positions_live_by_venue')}", flush=True)
+            except QuestDBError as e:
+                print(f"[DDL] Live view {t('positions_live_by_venue')} not created, server said: {e}. "
+                      f"Use the window-function twins in the query pack.", flush=True)
 
         if args.create_plain_views:
             created = []
@@ -991,24 +1111,38 @@ def ensure_tables_and_views(args, prefix: str):
                 FROM {t("trade_events")}
                 LATEST ON booked_ts PARTITION BY trade_id""")
                 created.append(t("trade_events_latest"))
-            if has("instruments"):
+            if has("instruments", "listings"):
                 # Relative tenor: position on the curve from today, counted per
                 # curve and granularity over unexpired contracts (M1 is the
                 # front month, Q1 the first listed quarter, Z1 the first carbon
                 # December). It rolls, so it is computed at query time; cells
                 # about a past instant inline the same expression with @asof.
                 # tenor_n is the same position as a number, for bucketing and
-                # for sorting M2 before M10.
+                # for sorting M2 before M10. exchange_symbol here is the primary
+                # listing's, the code an instrument-level row is known by.
                 conn.execute(f"""
                 CREATE VIEW IF NOT EXISTS {t("tenors")} AS
-                SELECT symbol, exchange_symbol, curve, complex, granularity,
-                       delivery_start, delivery_end, hours, days, expiry,
-                       granularity || row_number() OVER (PARTITION BY curve, granularity ORDER BY delivery_start) AS tenor,
-                       row_number() OVER (PARTITION BY curve, granularity ORDER BY delivery_start) AS tenor_n,
-                       datediff('M', now(), delivery_start) AS months_to_delivery
-                FROM {t("instruments")}
-                WHERE expiry > now()""")
+                SELECT i.symbol, l.exchange AS primary_exchange, l.exchange_symbol,
+                       i.curve, i.complex, i.granularity,
+                       i.delivery_start, i.delivery_end, i.hours, i.days, i.expiry,
+                       i.granularity || row_number() OVER (PARTITION BY i.curve, i.granularity ORDER BY i.delivery_start) AS tenor,
+                       row_number() OVER (PARTITION BY i.curve, i.granularity ORDER BY i.delivery_start) AS tenor_n,
+                       datediff('M', now(), i.delivery_start) AS months_to_delivery
+                FROM {t("instruments")} i
+                JOIN {t("listings")} l ON l.symbol = i.symbol AND l.is_primary
+                WHERE i.expiry > now()""")
                 created.append(t("tenors"))
+                # One row per listing with the instrument's delivery and tenor:
+                # what the instrument master cell shows.
+                conn.execute(f"""
+                CREATE VIEW IF NOT EXISTS {t("instrument_master")} AS
+                SELECT t.curve, t.tenor, t.tenor_n, l.symbol, l.exchange, l.mic, l.exchange_code,
+                       l.exchange_physical_code, l.exchange_symbol, l.ccp, l.is_primary, l.liquidity_share,
+                       l.lot_size, l.tick_size, i.unit, i.ccy, t.granularity, t.delivery_start, t.delivery_end, t.expiry
+                FROM {t("listings")} l
+                JOIN {t("instruments")} i ON i.symbol = l.symbol
+                JOIN {t("tenors")} t ON t.symbol = l.symbol""")
+                created.append(t("instrument_master"))
             if created:
                 print(f"[DDL] Views ready: {', '.join(created)}", flush=True)
 
@@ -1182,6 +1316,29 @@ class MarketModel:
         self.exchange = instruments.exchange.to_numpy()
         self.rank = instruments["rank"].to_numpy()
         self.is_month = np.isin(self.gran, ["M", "Z"])
+        # Listings: where each instrument trades. Arrays are indexed by listing.
+        self.listings = build_listings(instruments, seed)
+        L = self.listings
+        self.nl = len(L)
+        self.l_ci = L.ci.to_numpy()
+        self.l_exchange = L.exchange.to_numpy()
+        self.l_primary = L.is_primary.to_numpy().astype(bool)
+        self.l_rate = L.rate_mult.to_numpy()
+        self.l_size = L.size_mult.to_numpy()
+        self.l_spread = L.spread_mult.to_numpy()
+        self.l_basis_amp = L.basis_amp.to_numpy()
+        self.l_ph1, self.l_ph2 = L.basis_ph1.to_numpy(), L.basis_ph2.to_numpy()
+        self.l_p1, self.l_p2 = L.basis_p1.to_numpy(), L.basis_p2.to_numpy()
+        self.l_divergent = L.divergent.to_numpy().astype(bool)
+        self.l_share = L.liquidity_share.to_numpy()
+        self.l_ccp = L.ccp.to_numpy()
+        self.listings_of = {}
+        for li, ci in enumerate(self.l_ci):
+            self.listings_of.setdefault(int(ci), []).append(li)
+        self.primary_listing = np.array([self.listings_of[i][0] for i in range(n)])
+        self.secondary_listing = np.array([self.listings_of[i][1] if len(self.listings_of[i]) > 1 else -1
+                                           for i in range(n)])
+        self._div_cache = {}
         # Strip weights: identity for months, hours (power) or days (gas) for strips.
         W = np.eye(n)
         for i, r in instruments.iterrows():
@@ -1412,16 +1569,77 @@ class MarketModel:
         iv = np.stack([atm - 0.9 * rr + 2.8 * bf, atm - rr / 2 + bf, atm, atm + rr / 2 + bf, atm + 0.9 * rr + 2.8 * bf], axis=1)
         return sel, tau, iv
 
-    def bbo(self, mid: np.ndarray, ci: np.ndarray, tod: np.ndarray):
+    def bbo(self, mid: np.ndarray, ci: np.ndarray, tod: np.ndarray, spread_mult=1.0):
         """Quantized bid and ask for contract indices ci at fair mids, spread
-        widening off-hours."""
+        widening off-hours (and on a secondary venue, by spread_mult)."""
         tick = self.tick[ci]
         mult = np.where(tod < 0.2, 2.0, np.where(tod < 0.6, 1.3, 1.0))
-        spread = self.spread_ticks[ci] * tick * mult
+        spread = self.spread_ticks[ci] * tick * mult * spread_mult
         bid = np.round(np.round((mid - spread / 2.0) / tick) * tick, 6)
         ask = np.round(np.round((mid + spread / 2.0) / tick) * tick, 6)
         ask = np.where(ask <= bid, np.round(bid + tick, 6), ask)
         return bid, ask
+
+    # ---- listings
+    def _divergences(self, li: int, day: int):
+        """Planted cross-venue divergences on one secondary listing for one UTC
+        day: (start, end, offset) arrays. A Poisson number of events between
+        07:00 and 17:00 on weekdays; each moves the secondary 2 to 4 ticks away
+        for 5 to 30 seconds, then closes. Keyed on (seed, listing, day), so every
+        process computes the same schedule."""
+        key = (li, day)
+        if key not in self._div_cache:
+            if not self.l_divergent[li] or ((day + 3) % 7) >= 5:
+                ev = (np.zeros(0), np.zeros(0), np.zeros(0))
+            else:
+                r = np.random.default_rng([self.seed, 19, li, day])
+                k = r.poisson(DIVERGENCE_PER_HOUR * 10)
+                start = day * 86400 + 7 * 3600 + np.sort(r.uniform(0, 10 * 3600, k))
+                dur = r.uniform(*DIVERGENCE_SECS, k)
+                off = r.integers(DIVERGENCE_TICKS[0], DIVERGENCE_TICKS[1] + 1, k) * r.choice([-1.0, 1.0], k)
+                ev = (start, start + dur, off * self.tick[self.l_ci[li]])
+            self._div_cache[key] = ev
+        return self._div_cache[key]
+
+    def listing_offset(self, li: np.ndarray, t: np.ndarray) -> np.ndarray:
+        """A listing's mid relative to fair value at epoch seconds t: zero on the
+        primary; on a secondary, a slow mean-reverting basis of a fraction of a
+        tick (two sinusoids with listing-specific periods and phases) plus any
+        planted divergence."""
+        li = np.asarray(li)
+        t = np.asarray(t, dtype=float)
+        out = self.l_basis_amp[li] * (0.6 * np.sin(2 * np.pi * t / self.l_p1[li] + self.l_ph1[li])
+                                      + 0.4 * np.sin(2 * np.pi * t / self.l_p2[li] + self.l_ph2[li]))
+        for one in np.unique(li[self.l_divergent[li]]) if len(li) else []:
+            m = li == one
+            for day in np.unique((t[m] // 86400).astype(np.int64)):
+                start, end, off = self._divergences(int(one), int(day))
+                if not len(start):
+                    continue
+                tm = t[m]
+                idx = np.searchsorted(start, tm, side="right") - 1
+                ok = (idx >= 0) & (tm < end[np.maximum(idx, 0)])
+                add = np.where(ok, off[np.maximum(idx, 0)], 0.0)
+                out[np.where(m)[0]] += add
+        return out
+
+    def displayed_lots(self, li: np.ndarray, sec: np.ndarray, side: int) -> np.ndarray:
+        """Displayed size in lots on a listing's bid (side -1) or ask (side 1)
+        during an epoch second: log-normal around 10 lots on the first three
+        months and 3 elsewhere, halved on a secondary venue. Keyed on (seed,
+        listing, second, side), so quotes and the fill router see the same
+        size."""
+        li = np.asarray(li, dtype=np.int64)
+        sec = np.asarray(sec, dtype=np.int64)
+        med = np.where(self.rank[self.l_ci[li]] < 3, 10.0, 3.0) * self.l_size[li]
+        z = np.zeros(len(li))
+        minute = sec // 60
+        col = 1 if side > 0 else 0
+        for a, m in set(zip(li.tolist(), minute.tolist())):
+            sel = (li == a) & (minute == m)
+            draws = np.random.default_rng([self.seed, 23, a, m]).standard_normal((60, 2))
+            z[sel] = draws[sec[sel] % 60, col]
+        return np.maximum(1.0, np.round(med * np.exp(0.7 * z)))
 
     def tradable(self, t: float, margin_s: float = 3 * 86400) -> np.ndarray:
         expiry = np.array([pd.Timestamp(d).value / 1e9 for d in self.inst.expiry])
@@ -1435,7 +1653,8 @@ class MarketModel:
 FILL_COLS = ["ts", "book", "trader", "symbol", "curve", "qty", "px", "venue", "order_id", "trade_id", "passive"]
 EVENT_COLS = ["booked_ts", "trade_id", "version", "status", "trade_ts", "book", "trader", "symbol", "curve",
               "qty", "px", "channel", "counterparty", "booked_by", "reason"]
-SNAP_COLS = ["ts", "book", "symbol", "curve", "qty", "settle_px", "source"]
+SNAP_COLS = ["ts", "book", "symbol", "curve", "venue", "qty", "settle_px", "source"]
+QUOTE_COLS = ["ts", "symbol", "curve", "bid", "ask", "bid_size", "ask_size", "source"]
 FORESIGHT_MIN = 15
 BOOK_TRANSFER_PEERS = {"TTF": ["EU_GAS", "LNG"], "NBP": ["EU_GAS", "UK_POWER"], "UKA": ["CARBON", "UK_POWER"]}
 
@@ -1453,13 +1672,17 @@ class DeskPlanner:
         self.story = story
         self.scale = scale
         self.rng = np.random.default_rng([seed, 5])
-        self.pos = {}            # (book, symbol) -> units, fills and deals at trade time (the trader's view)
-        self.pos_fills = {}      # (book, symbol) -> units from exchange fills only
-        self.effects = []        # (booked_sec, book, symbol, dqty): what the booking log adds on top of the
-                                 # fills as of booking time (voice deals, amendments, cancels, the planted errors)
+        # Venue routing draws from its own stream, so the planned orders (time,
+        # side, size) are the same whichever venues they end up on.
+        self.route_rng = np.random.default_rng([seed, 29])
+        self.pos = {}            # (book, symbol) -> units, fills and deals at trade time (the trader's view, risk)
+        self.pos_fills = {}      # (book, symbol, venue) -> units from exchange fills only (margin)
+        self.effects = []        # (booked_sec, book, symbol, venue, dqty): what the booking log adds on top of
+                                 # the fills as of booking time (voice deals, amendments, cancels, planted errors)
         self.settle = {}         # symbol -> last settlement price
         self.targets = {}        # (book, curve) -> target net position
         self.fills, self.events, self.snapshots = [], [], []
+        self.book_quotes = []    # the secondary venue's book just before each fill routed there
         self.scripted = {}       # minute -> [(sec, book, trader, ci, side, units, aggressive, tag)]
         self.planned_through = None
         self.demo_events = self._demo_events()
@@ -1509,10 +1732,13 @@ class DeskPlanner:
     def _net(self, book: str, curve: str) -> float:
         return sum(q for (b, s), q in self.pos.items() if b == book and self.mkt.curve[self.mkt.sym_idx[s]] == curve)
 
-    def _add_pos(self, book: str, sym: str, dq: float, fill: bool = False):
+    def _add_pos(self, book: str, sym: str, dq: float, venue: Optional[str] = None):
+        """Instrument position (risk); with a venue, also the per-venue fill
+        position (margin)."""
         self.pos[(book, sym)] = self.pos.get((book, sym), 0.0) + dq
-        if fill:
-            self.pos_fills[(book, sym)] = self.pos_fills.get((book, sym), 0.0) + dq
+        if venue is not None:
+            key = (book, sym, venue)
+            self.pos_fills[key] = self.pos_fills.get(key, 0.0) + dq
 
     def _side_for(self, book: str, ci: int, now_px: float, fut_px: float, foresight: float, t0: int) -> int:
         curve = self.mkt.curve[ci]
@@ -1530,22 +1756,64 @@ class DeskPlanner:
             p_buy = 0.5
         return 1 if self.rng.uniform() < p_buy else -1
 
-    def _px(self, mid: float, ci: int, side: int, aggressive: bool, tod: float) -> float:
-        bid, ask = self.mkt.bbo(np.array([mid]), np.array([ci]), np.array([tod]))
+    def _px(self, mid: float, ci: int, side: int, aggressive: bool, tod: float, spread_mult: float = 1.0) -> float:
+        bid, ask = self.mkt.bbo(np.array([mid]), np.array([ci]), np.array([tod]), spread_mult)
         if aggressive:
             return float(ask[0] if side > 0 else bid[0])
         return float(bid[0] if side > 0 else ask[0])
+
+    def _route(self, book: str, ci: int, side: int, sec: int, fair: float, tod: float) -> int:
+        """Pick the listing for a screen order: start from the liquidity share,
+        double the weight of a venue where the book holds the opposite side
+        (closing where you are open saves margin), 1.5x the venue with the
+        better touch for the order's side, normalise and draw. A venue whose
+        feed is down is skipped: the desk cannot see its book."""
+        mkt = self.mkt
+        lis = mkt.listings_of[ci]
+        if self.story.outage_start <= sec < self.story.outage_end:
+            lis = [li for li in lis if mkt.l_exchange[li] != OUTAGE_EXCHANGE]
+        if len(lis) == 1:
+            return lis[0]
+        # liquidity_share is the target share of fills. The primary nearly always
+        # has the better touch (the secondary is wider), so its starting weight
+        # is taken net of that bonus, or the bonus alone would skew the split.
+        w = np.array([mkt.l_share[li] / (TOUCH_BONUS if mkt.l_primary[li] else 1.0) for li in lis], dtype=float)
+        for k, li in enumerate(lis):
+            if self.pos_fills.get((book, mkt.sym[ci], mkt.l_exchange[li]), 0.0) * side < 0:
+                w[k] *= CLOSING_BONUS
+        touch = []
+        for li in lis:
+            mid = fair + float(mkt.listing_offset(np.array([li]), np.array([float(sec)]))[0])
+            bid, ask = mkt.bbo(np.array([mid]), np.array([ci]), np.array([tod]), mkt.l_spread[li])
+            touch.append(-ask[0] if side > 0 else bid[0])
+        best = int(np.argmax(touch))
+        if touch.count(touch[best]) == 1:
+            w[best] *= TOUCH_BONUS
+        return lis[int(self.route_rng.choice(len(lis), p=w / w.sum()))]
+
+    def _book_quote(self, ts_ns: int, ci: int, li: int, sec: int, mid: float, tod: float):
+        mkt = self.mkt
+        bid, ask = mkt.bbo(np.array([mid]), np.array([ci]), np.array([tod]), mkt.l_spread[li])
+        lot = float(mkt.inst.lot_size.iat[ci])
+        bsz = float(mkt.displayed_lots(np.array([li]), np.array([sec]), -1)[0]) * lot
+        asz = float(mkt.displayed_lots(np.array([li]), np.array([sec]), 1)[0]) * lot
+        self.book_quotes.append([ts_ns, mkt.sym[ci], mkt.curve[ci], float(bid[0]), float(ask[0]), bsz, asz,
+                                 mkt.l_exchange[li]])
+
+    def _route_uuid(self) -> str:
+        return str(uuid.UUID(bytes=self.route_rng.bytes(16), version=4))
 
     def _book_row(self, booked_ns, trade_id, version, status, trade_ns, book, trader, ci, qty, px,
                   channel, counterparty, booked_by, reason):
         self.events.append([booked_ns, trade_id, version, status, trade_ns, book, trader, self.mkt.sym[ci],
                             self.mkt.curve[ci], float(qty), float(px), channel, counterparty, booked_by, reason])
 
-    def _fill_row(self, ts_ns, book, trader, ci, qty, px, passive, trade_id):
+    def _fill_row(self, ts_ns, book, trader, ci, qty, px, passive, trade_id, venue, order_id):
         self.fills.append([ts_ns, book, trader, self.mkt.sym[ci], self.mkt.curve[ci], float(qty), float(px),
-                           self.mkt.exchange[ci], self._uuid(), trade_id, bool(passive)])
+                           venue, order_id, trade_id, bool(passive)])
 
-    def _background_amendment(self, booked_ns, trade_id, trade_ns, book, trader, ci, qty, px, channel, cpty, by):
+    def _background_amendment(self, booked_ns, trade_id, trade_ns, book, trader, ci, qty, px, channel, cpty, by,
+                              venue):
         """Background amendments 10 minutes to 3 hours after booking, version 2.
         STP-mirrored exchange fills are rarely touched (0.3% amended, 0.1%
         cancelled); hand-booked voice deals much more often (5% and 1%).
@@ -1558,7 +1826,7 @@ class DeskPlanner:
         if u < p_cancel:
             self._book_row(later, trade_id, 2, "CANCELLED", trade_ns, book, trader, ci, qty, px, channel, cpty, by,
                            "DUPLICATE" if self.rng.uniform() < 0.5 else "ERROR")
-            self.effects.append((later / NS, book, self.mkt.sym[ci], -qty))
+            self.effects.append((later / NS, book, self.mkt.sym[ci], venue, -qty))
             return
         reason = ["PX_CORRECTION", "QTY_CORRECTION", "BOOK_TRANSFER"][int(self.rng.integers(0, 3))]
         new_book, new_qty, new_px = book, qty, px
@@ -1580,10 +1848,10 @@ class DeskPlanner:
         self._book_row(later, trade_id, 2, "AMENDED", trade_ns, new_book, trader, ci, new_qty, new_px,
                        channel, cpty, by, reason)
         if new_book != book:
-            self.effects.append((later / NS, book, self.mkt.sym[ci], -qty))
-            self.effects.append((later / NS, new_book, self.mkt.sym[ci], qty))
+            self.effects.append((later / NS, book, self.mkt.sym[ci], venue, -qty))
+            self.effects.append((later / NS, new_book, self.mkt.sym[ci], venue, qty))
         elif new_qty != qty:
-            self.effects.append((later / NS, book, self.mkt.sym[ci], new_qty - qty))
+            self.effects.append((later / NS, book, self.mkt.sym[ci], venue, new_qty - qty))
 
     # ---- the storyline
     def _demo_events(self):
@@ -1598,8 +1866,8 @@ class DeskPlanner:
                                      f"at {iso(s.late_booking)}"),
             (s.bad_mark_start, "4_curves", f"Manual mark on {sym('TTF', 'Q')} +2.50 EUR above its months (trader_11), "
                                            f"corrected (version 2) at {iso(s.bad_mark_end)}"),
-            (s.outage_start, "7_models", "3-minute outage of the ICE Endex quote feed (TTF, EUA); curve_marks fall back "
-                                         "to INTERP and model grading has no fresh quote"),
+            (s.outage_start, "7_models", "3-minute outage of the EEX quote feed: EEX-listed TTF, EUA and UK power go "
+                                         "dark, ICE keeps ticking and the curve marks stay MARKET"),
             (s.fat_finger_fill, "6_recon", f"LNG fill in {sym('JKM', 'M')} booked with 10x quantity by STP, amended "
                                            f"(QTY_CORRECTION) at {iso(s.fat_finger_fix)}"),
             (s.duplicate_deal, "6_recon", f"EU_GAS {sym('TTF', 'Q')} broker trade booked twice; duplicate cancelled "
@@ -1647,15 +1915,16 @@ class DeskPlanner:
                     self.settle[self.mkt.sym[i]] = float(quantize(px[i], self.mkt.tick[i], int(self.mkt.precision[i])))
 
     def snapshot(self, sec: int):
-        """EOD positions per book and contract at `sec` (00:00 UTC): exchange
-        fills to that point plus the booking log as known at that point (voice
-        deals once booked, amendments, cancels), at settlement."""
+        """EOD positions per book, contract and venue at `sec` (00:00 UTC):
+        exchange fills to that point plus the booking log as known at that
+        point (voice deals once booked, under venue OTC; amendments, cancels),
+        at settlement."""
         qty = dict(self.pos_fills)
-        for booked_sec, book, sym, dq in self.effects:
+        for booked_sec, book, sym, venue, dq in self.effects:
             if booked_sec < sec:
-                qty[(book, sym)] = qty.get((book, sym), 0.0) + dq
+                qty[(book, sym, venue)] = qty.get((book, sym, venue), 0.0) + dq
         fair = None
-        for (book, sym), q in sorted(qty.items()):
+        for (book, sym, venue), q in sorted(qty.items()):
             if abs(q) < 1e-9:
                 continue
             ci = self.mkt.sym_idx[sym]
@@ -1664,7 +1933,7 @@ class DeskPlanner:
                 if fair is None:
                     fair = self.mkt.fair(np.array([sec]))[0]
                 px = float(quantize(fair[ci], self.mkt.tick[ci], int(self.mkt.precision[ci])))
-            self.snapshots.append([sec * NS, book, sym, self.mkt.curve[ci], float(q), px, "EOD_BATCH"])
+            self.snapshots.append([sec * NS, book, sym, self.mkt.curve[ci], venue, float(q), px, "EOD_BATCH"])
 
     def initial_positions(self, sec: int):
         """Legacy book at the start of the window: a few front contracts per
@@ -1676,8 +1945,17 @@ class DeskPlanner:
                 ci = self._nth(curve, gran, k)
                 lot = float(self.mkt.inst.lot_size.iat[ci])
                 q = round(net / 2 / lot) * lot
-                if q:
-                    self._add_pos(book, self.mkt.sym[ci], q, fill=True)
+                if not q:
+                    continue
+                # Held across the contract's venues in proportion to their share.
+                lis = self.mkt.listings_of[ci]
+                left = q
+                for li in lis[1:]:
+                    part = round(q * self.mkt.l_share[li] / lot) * lot
+                    if part:
+                        self._add_pos(book, self.mkt.sym[ci], part, self.mkt.l_exchange[li])
+                        left -= part
+                self._add_pos(book, self.mkt.sym[ci], left, self.mkt.l_exchange[lis[0]])
         self.snapshot(sec)
 
     # ---- one minute
@@ -1727,26 +2005,57 @@ class DeskPlanner:
                 if side == 0:
                     side = self._side_for(book, ci, fair_now[ci], fair_fut[ci], BOOKS[book]["foresight"], t0)
                     units = self._units(ci, self._lots(ci, book))
-                px = self._px(float(mids[k]), ci, side, aggressive, tod)
                 qty = side * units
                 ts_ns = sec * NS + int(rng.integers(0, NS))
                 tid = self._uuid()
-                self._fill_row(ts_ns, book, trader, ci, qty, px, not aggressive, tid)
-                self._add_pos(book, mkt.sym[ci], qty, fill=True)
+                oid = self._uuid()
+                # Route the order to a listing. A secondary-venue fill is capped at
+                # that venue's displayed size; any remainder sweeps the primary as a
+                # second fill of the same order, a microsecond later.
+                li = self._route(book, ci, side, sec, float(mids[k]), tod)
+                lot = float(mkt.inst.lot_size.iat[ci])
+                fill_units = units
+                rest = 0.0
+                if not mkt.l_primary[li]:
+                    shown = float(mkt.displayed_lots(np.array([li]), np.array([sec]), side)[0]) * lot
+                    if units > shown:
+                        fill_units, rest = shown, units - shown
+                venue = mkt.l_exchange[li]
+                ccp = mkt.l_ccp[li]
+                mid_v = float(mids[k]) + float(mkt.listing_offset(np.array([li]), np.array([float(sec)]))[0])
+                px = self._px(mid_v, ci, side, aggressive, tod, mkt.l_spread[li])
+                if not mkt.l_primary[li]:
+                    # The book the router saw, published a nanosecond before the
+                    # fill: the quote the fill priced against and the sizes it was
+                    # capped at, so the quotes table shows what the fill hit.
+                    self._book_quote(max(sec * NS, ts_ns - 1), ci, li, sec, mid_v, tod)
+                qty = side * fill_units
+                self._fill_row(ts_ns, book, trader, ci, qty, px, not aggressive, tid, venue, oid)
+                self._add_pos(book, mkt.sym[ci], qty, venue)
                 booked_ns = ts_ns + int(rng.integers(50, 500)) * 1_000_000
-                ccp = CCP[mkt.exchange[ci]]
+                if rest > 0:
+                    pli = mkt.primary_listing[ci]
+                    px2 = self._px(float(mids[k]), ci, side, aggressive, tod)
+                    tid2 = self._route_uuid()
+                    ts2 = ts_ns + 1000
+                    self._fill_row(ts2, book, trader, ci, side * rest, px2, not aggressive, tid2,
+                                   mkt.l_exchange[pli], oid)
+                    self._add_pos(book, mkt.sym[ci], side * rest, mkt.l_exchange[pli])
+                    self._book_row(ts2 + int(self.route_rng.integers(50, 500)) * 1_000_000, tid2, 1, "NEW", ts2,
+                                   book, trader, ci, side * rest, px2, "EXCH", mkt.l_ccp[pli], "STP", None)
                 if tag == "fat_finger":
                     # The fill is right; the STP booking carries ten times the
                     # quantity until trade support corrects it.
                     self._book_row(booked_ns, tid, 1, "NEW", ts_ns, book, trader, ci, qty * 10, px, "EXCH", ccp, "STP", None)
                     self._book_row(s.fat_finger_fix * NS + 7 * NS, tid, 2, "AMENDED", ts_ns, book, trader, ci, qty, px,
                                    "EXCH", ccp, "STP", "QTY_CORRECTION")
-                    self.effects.append((booked_ns / NS, book, mkt.sym[ci], qty * 9))
-                    self.effects.append((s.fat_finger_fix + 7, book, mkt.sym[ci], -qty * 9))
+                    self.effects.append((booked_ns / NS, book, mkt.sym[ci], venue, qty * 9))
+                    self.effects.append((s.fat_finger_fix + 7, book, mkt.sym[ci], venue, -qty * 9))
                     continue
                 self._book_row(booked_ns, tid, 1, "NEW", ts_ns, book, trader, ci, qty, px, "EXCH", ccp, "STP", None)
                 if tag == "random":
-                    self._background_amendment(booked_ns, tid, ts_ns, book, trader, ci, qty, px, "EXCH", ccp, "STP")
+                    self._background_amendment(booked_ns, tid, ts_ns, book, trader, ci, qty, px, "EXCH", ccp, "STP",
+                                               venue)
 
         # Broker and bilateral deals: about 10% of the fill count, in strips and
         # back months, larger, booked late. Never in fills.
@@ -1816,25 +2125,28 @@ class DeskPlanner:
         tid = self._uuid()
         self._add_pos(book, mkt.sym[ci], qty)
         self._book_row(booked_ns, tid, 1, "NEW", trade_ns, book, trader, ci, qty, px, channel, cpty, by, None)
-        self.effects.append((booked_ns / NS, book, mkt.sym[ci], qty))
+        self.effects.append((booked_ns / NS, book, mkt.sym[ci], OTC_VENUE, qty))
         if duplicate:
             dup = self._uuid()
             self._book_row(booked_ns + 15 * NS, dup, 1, "NEW", trade_ns, book, trader, ci, qty, px, channel, cpty, by, None)
             self._book_row(s.duplicate_fix * NS + 3 * NS, dup, 2, "CANCELLED", trade_ns, book, trader, ci, qty, px,
                            channel, cpty, by, "DUPLICATE")
-            self.effects.append((booked_sec + 15, book, mkt.sym[ci], qty))
-            self.effects.append((s.duplicate_fix + 3, book, mkt.sym[ci], -qty))
+            self.effects.append((booked_sec + 15, book, mkt.sym[ci], OTC_VENUE, qty))
+            self.effects.append((s.duplicate_fix + 3, book, mkt.sym[ci], OTC_VENUE, -qty))
         else:
-            self._background_amendment(booked_ns, tid, trade_ns, book, trader, ci, qty, px, channel, cpty, by)
+            self._background_amendment(booked_ns, tid, trade_ns, book, trader, ci, qty, px, channel, cpty, by,
+                                       OTC_VENUE)
 
     # ---- output
-    def take_rows(self):
-        """Hand out everything planned so far as DataFrames and clear the buffers."""
-        f = pd.DataFrame(self.fills, columns=FILL_COLS)
-        e = pd.DataFrame(self.events, columns=EVENT_COLS)
-        p = pd.DataFrame(self.snapshots, columns=SNAP_COLS)
-        self.fills, self.events, self.snapshots = [], [], []
-        return f, e, p
+    def take_rows(self) -> dict:
+        """Hand out everything planned so far as DataFrames, keyed by table, and
+        clear the buffers."""
+        out = {"fills": pd.DataFrame(self.fills, columns=FILL_COLS),
+               "trade_events": pd.DataFrame(self.events, columns=EVENT_COLS),
+               "position_snapshots": pd.DataFrame(self.snapshots, columns=SNAP_COLS),
+               "quotes": pd.DataFrame(self.book_quotes, columns=QUOTE_COLS)}
+        self.fills, self.events, self.snapshots, self.book_quotes = [], [], [], []
+        return out
 
 
 def demo_events_df(rows) -> pd.DataFrame:
@@ -1851,18 +2163,19 @@ def demo_events_df(rows) -> pd.DataFrame:
 # ----------------------------
 
 TABLE_SYMBOLS = {
-    "instruments": ["symbol", "curve", "complex", "granularity", "exchange", "exchange_code", "term_code",
-                    "month_code", "unit", "ccy", "fx_symbol"],
+    "instruments": ["symbol", "curve", "complex", "granularity", "term_code", "month_code", "unit", "ccy",
+                    "fx_symbol"],
+    "listings": ["symbol", "exchange", "mic", "exchange_code", "exchange_physical_code", "ccp"],
     "limits": ["book", "curve", "unit", "approved_by"],
     "quotes": ["symbol", "curve", "source"],
-    "curve_marks": ["curve", "symbol", "source", "marked_by"],
+    "curve_marks": ["curve", "symbol", "source", "venue", "marked_by"],
     "settlements": ["curve", "symbol", "source"],
     "iv_marks": ["curve", "symbol", "delta_bucket", "source"],
     "model_prices": ["model_version", "curve", "symbol"],
     "da_prices": ["market", "source"],
     "fills": ["book", "trader", "symbol", "curve", "venue"],
     "trade_events": ["status", "book", "trader", "symbol", "curve", "channel", "counterparty", "booked_by", "reason"],
-    "position_snapshots": ["book", "symbol", "curve", "source"],
+    "position_snapshots": ["book", "symbol", "curve", "venue", "source"],
     "demo_events": ["act"],
 }
 TABLE_TS = {name: ("booked_ts" if name == "trade_events" else "ts") for name in TABLE_SYMBOLS}
@@ -1948,7 +2261,7 @@ class SpanGenerator:
         self.story = story
         self.seed = seed
         self.scale = scale
-        self.is_outage = mkt.exchange == OUTAGE_EXCHANGE
+        self.l_outage = mkt.l_exchange == OUTAGE_EXCHANGE
         self.model_sel = np.where(np.isin(mkt.curve, ["TTF", "NBP", "UKPWR"]) & mkt.is_month & (mkt.rank < 24))[0]
         self.bad_quarter = int(np.where((mkt.curve == "TTF") & (mkt.gran == "Q"))[0][
             np.argmin(mkt.dstart[(mkt.curve == "TTF") & (mkt.gran == "Q")])])
@@ -1973,25 +2286,44 @@ class SpanGenerator:
         tod_oil = tod_weight(secs, "OIL")
         tod_gas = tod_weight(secs, "GAS")
         tod = np.where(mkt.cx[None, :] == "OIL", tod_oil[:, None], tod_gas[:, None])
-        lam = mkt.tick_rate[None, :] * tod * self.scale * frac[:, None]
+        # One independent stream per listing: the secondary venue ticks at a
+        # fraction of the primary's rate, and nothing during its feed outage.
+        lci = mkt.l_ci
+        lam = (mkt.tick_rate[lci][None, :] * tod[:, lci] * mkt.l_rate[None, :]) * self.scale * frac[:, None]
         outage = (secs >= self.story.outage_start) & (secs < self.story.outage_end)
-        lam[np.ix_(outage, self.is_outage)] = 0.0
+        lam[np.ix_(outage, self.l_outage)] = 0.0
         counts = rng.poisson(lam)
         si = np.repeat(np.arange(len(secs)), counts.sum(axis=1))
-        ci = np.concatenate([np.repeat(np.arange(mkt.n), counts[i]) for i in range(len(secs))]) if si.size else np.zeros(0, int)
+        li = np.concatenate([np.repeat(np.arange(mkt.nl), counts[i]) for i in range(len(secs))]) if si.size else np.zeros(0, int)
         frames = []
         if si.size:
-            fair = mkt.fair(secs)
-            mid = fair[si, ci] + rng.uniform(-0.3, 0.3, len(si)) * mkt.tick[ci]
-            bid, ask = mkt.bbo(mid, ci, tod[si, ci])
-            lots = np.exp(np.log(np.where(mkt.rank[ci] < 3, 10.0, 3.0)) + 0.7 * rng.standard_normal(len(si)))
+            ci = lci[li]
+            prim = mkt.l_primary[li]
+            u = rng.random(len(si))
+            ts = secs[si] * NS + lo[si] + (u * (hi[si] - lo[si])).astype(np.int64)
+            # Fair value at the tick time, interpolated within the second; a
+            # secondary venue quotes the fair value of 50 to 300 ms earlier.
+            lag = np.where(prim, 0.0, rng.uniform(*SECONDARY_LAG_S, len(si)))
+            t_eff = (ts - s0 * NS) / NS - lag
+            grid = mkt.fair(np.arange(s0 - 1, s1 + 1))
+            pos = np.clip(t_eff + 1.0, 0.0, len(grid) - 1.000001)
+            k = np.floor(pos).astype(np.int64)
+            w = pos - k
+            fair = grid[k, ci] * (1 - w) + grid[np.minimum(k + 1, len(grid) - 1), ci] * w
+            mid = fair + mkt.listing_offset(li, s0 + t_eff) + rng.uniform(-0.3, 0.3, len(si)) * mkt.tick[ci]
+            bid, ask = mkt.bbo(mid, ci, tod[si, ci], mkt.l_spread[li])
             lot_size = mkt.inst.lot_size.to_numpy()[ci]
-            bsz = np.maximum(1, np.round(lots)) * lot_size
-            asz = np.maximum(1, np.round(lots * np.exp(0.5 * rng.standard_normal(len(si))))) * lot_size
-            ts = secs[si] * NS + lo[si] + (rng.random(len(si)) * (hi[si] - lo[si])).astype(np.int64)
+            lots = np.exp(np.log(np.where(mkt.rank[ci] < 3, 10.0, 3.0)) + 0.7 * rng.standard_normal(len(si)))
+            bsz = np.maximum(1, np.round(lots))
+            asz = np.maximum(1, np.round(lots * np.exp(0.5 * rng.standard_normal(len(si)))))
+            sec_idx = np.where(~prim)[0]
+            if len(sec_idx):
+                tsec = secs[si[sec_idx]]
+                bsz[sec_idx] = mkt.displayed_lots(li[sec_idx], tsec, -1)
+                asz[sec_idx] = mkt.displayed_lots(li[sec_idx], tsec, 1)
             frames.append(pd.DataFrame({
                 "ts": ts, "symbol": mkt.sym[ci], "curve": mkt.curve[ci], "bid": bid, "ask": ask,
-                "bid_size": bsz, "ask_size": asz, "source": mkt.inst.source.to_numpy()[ci]}))
+                "bid_size": bsz * lot_size, "ask_size": asz * lot_size, "source": mkt.l_exchange[li]}))
         fx = mkt.fx_at(secs)
         for pair in FX_PAIRS:
             cnt = rng.poisson(FX_TICK_RATE * tod_gas * self.scale * frac)
@@ -2017,26 +2349,36 @@ class SpanGenerator:
         fair = mkt.fair(minute_secs)
         n = len(minute_secs)
         tod = tod_weight(minute_secs, "GAS")
-        # curve_marks: every contract every minute. MARKET if the contract ticks
-        # (expected at least one quote in 5 minutes) and is not in the outage,
-        # else INTERP from the model.
+        # curve_marks: every contract every minute. MARKET from the best
+        # available venue (expected at least one quote in 5 minutes, feed up):
+        # the primary if it qualifies, else the secondary; INTERP from the
+        # model if neither does. venue records which listing the mark came from.
         px = np.vstack([quantize(fair[i], mkt.tick, 6) for i in range(n)])
         px = np.round(px, 6)
+        in_outage = ((minute_secs >= s.outage_start) & (minute_secs < s.outage_end))[:, None]
         expected = mkt.tick_rate[None, :] * 300.0 * tod[:, None] * self.scale
-        market = expected >= 1.0
-        outage = ((minute_secs >= s.outage_start) & (minute_secs < s.outage_end))[:, None] & self.is_outage[None, :]
-        market &= ~outage
+        pl = mkt.primary_listing
+        p_ok = (expected * mkt.l_rate[pl][None, :] >= 1.0) & ~(in_outage & self.l_outage[pl][None, :])
+        sl = mkt.secondary_listing
+        has2 = sl >= 0
+        s_ok = has2[None, :] & (expected * np.where(has2, mkt.l_rate[np.maximum(sl, 0)], 0.0)[None, :] >= 1.0) \
+            & ~(in_outage & np.where(has2, self.l_outage[np.maximum(sl, 0)], False)[None, :])
+        market = p_ok | s_ok
         src = np.where(market, "MARKET", "INTERP")
+        venue = np.where(p_ok, mkt.l_exchange[pl][None, :],
+                         np.where(s_ok, np.where(has2, mkt.l_exchange[np.maximum(sl, 0)], None)[None, :], None)).astype(object)
         by = np.full((n, mkt.n), "CURVE_SVC", dtype=object)
         bad = ((minute_secs >= s.bad_mark_start) & (minute_secs < s.bad_mark_end))[:, None] \
             & (np.arange(mkt.n) == self.bad_quarter)[None, :]
         px = np.where(bad, np.round(px + 2.5, 6), px)
         src = np.where(bad, "MANUAL", src)
         by = np.where(bad, "trader_11", by)
+        venue = np.where(bad, None, venue)
         ts = np.repeat(minute_secs, mkt.n) * NS
         emitter.emit("curve_marks", pd.DataFrame({
             "ts": ts, "curve": np.tile(mkt.curve, n), "symbol": np.tile(mkt.sym, n), "price": px.ravel(),
-            "source": src.ravel(), "version": np.full(n * mkt.n, 1, dtype=np.int32), "marked_by": by.ravel()}))
+            "source": src.ravel(), "venue": venue.ravel(), "version": np.full(n * mkt.n, 1, dtype=np.int32),
+            "marked_by": by.ravel()}))
         if np.any(minute_secs == s.bad_mark_end):
             # 8.2 correction: version 2 for every bad minute, same ts, by the curve service.
             bad_secs = np.arange(s.bad_mark_start, s.bad_mark_end, 60)
@@ -2044,6 +2386,7 @@ class SpanGenerator:
             emitter.emit("curve_marks", pd.DataFrame({
                 "ts": bad_secs * NS, "curve": "TTF", "symbol": mkt.sym[self.bad_quarter],
                 "price": quantize(good, mkt.tick[self.bad_quarter], 6), "source": "MARKET",
+                "venue": mkt.l_exchange[mkt.primary_listing[self.bad_quarter]],
                 "version": np.full(len(bad_secs), 2, dtype=np.int32), "marked_by": "CURVE_SVC"}))
         # model_prices: champion (never refits) and challenger (hourly refit).
         sel = self.model_sel
@@ -2055,7 +2398,10 @@ class SpanGenerator:
         k = len(sel)
         tsm = np.repeat(minute_secs, k) * NS
         inputs = tsm - 500_000_000
-        stale = ((minute_secs >= s.outage_start) & (minute_secs < s.outage_end))[:, None] & self.is_outage[None, sel]
+        # Models price off the primary venue; its inputs go stale only if that
+        # venue's feed is the one down.
+        stale = ((minute_secs >= s.outage_start) & (minute_secs < s.outage_end))[:, None] \
+            & self.l_outage[mkt.primary_listing[sel]][None, :]
         inputs = np.where(stale.ravel(), s.outage_start * NS - 500_000_000, inputs)
         frames = []
         for name, m in (("champion_v1", champ), ("challenger_v2", chal)):
@@ -2149,7 +2495,8 @@ class SpanGenerator:
         s1 = -(-t1_ns // MINUTE_NS) * 60
         if s1 > s0:
             self.minute_tables(np.arange(s0, s1, 60), emitter)
-        for table, col in (("fills", "ts"), ("trade_events", "booked_ts"), ("position_snapshots", "ts")):
+        for table, col in (("fills", "ts"), ("trade_events", "booked_ts"), ("position_snapshots", "ts"),
+                           ("quotes", "ts")):
             df = desk.get(table)
             if df is not None and len(df):
                 sel = df[(df[col] >= t0_ns) & (df[col] < t1_ns)]
@@ -2162,20 +2509,26 @@ class SpanGenerator:
 # ----------------------------
 
 def instruments_df(inst: pd.DataFrame) -> pd.DataFrame:
-    df = pd.DataFrame({
+    return pd.DataFrame({
         "ts": np.zeros(len(inst), dtype=np.int64), "symbol": inst.symbol,
-        "exchange_symbol": inst.exchange_symbol.astype(object),
         "curve": inst.curve, "complex": inst["complex"], "granularity": inst.granularity,
         "delivery_start": pd.to_datetime(inst.delivery_start).astype("datetime64[ns]").astype("int64"),
         "delivery_end": pd.to_datetime(inst.delivery_end).astype("datetime64[ns]").astype("int64"),
         "hours": inst.hours.astype(np.int32), "days": inst.days.astype(np.int32),
         "expiry": pd.to_datetime(inst.expiry).astype("datetime64[ns]").astype("int64"),
-        "exchange": inst.exchange, "exchange_code": inst.exchange_code, "term_code": inst.term_code,
-        "month_code": inst.month_code, "unit": inst.unit,
+        "term_code": inst.term_code, "month_code": inst.month_code, "unit": inst.unit,
         "ccy": inst.ccy, "px_factor": inst.px_factor.astype(float), "fx_symbol": inst.fx_symbol,
-        "to_mwh": inst.to_mwh.astype(float), "lot_size": inst.lot_size.astype(float),
-        "tick_size": inst.tick_size.astype(float)})
-    return df
+        "to_mwh": inst.to_mwh.astype(float)})
+
+
+def listings_df(lst: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame({
+        "ts": np.zeros(len(lst), dtype=np.int64), "symbol": lst.symbol, "exchange": lst.exchange,
+        "mic": lst.mic, "exchange_code": lst.exchange_code,
+        "exchange_physical_code": lst.exchange_physical_code.astype(object).where(lst.exchange_physical_code.notna(), None),
+        "exchange_symbol": lst.exchange_symbol.astype(object), "ccp": lst.ccp,
+        "lot_size": lst.lot_size.astype(float), "tick_size": lst.tick_size.astype(float),
+        "is_primary": lst.is_primary.astype(bool), "liquidity_share": lst.liquidity_share.astype(float)})
 
 
 def limits_df() -> pd.DataFrame:
@@ -2302,7 +2655,8 @@ def save_state(path: str, mkt: MarketModel, planner: DeskPlanner, desk: dict, t_
         "anchors": anchors, "m0": mkt.m0 + len(mkt.path) - len(tail), "path": tail,
         "mkt_rng": mkt.rng.bit_generator.state,
         "planner": {
-            "rng": planner.rng.bit_generator.state, "pos": planner.pos, "pos_fills": planner.pos_fills,
+            "rng": planner.rng.bit_generator.state, "route_rng": planner.route_rng.bit_generator.state,
+            "pos": planner.pos, "pos_fills": planner.pos_fills,
             "effects": [e for e in planner.effects if e[0] > t_last_ns / NS - 86400], "settle": planner.settle,
             "targets": planner.targets, "scripted": planner.scripted, "planned_through": planner.planned_through,
             "pending": {k: v for k, v in desk.items()},
@@ -2326,8 +2680,15 @@ def restore_from_state(state: dict, mkt: MarketModel, planner: DeskPlanner):
     p = state["planner"]
     planner.rng.bit_generator.state = p["rng"]
     planner.pos = p["pos"]
-    planner.pos_fills = p.get("pos_fills", dict(p["pos"]))
-    planner.effects = p["effects"]
+    if "route_rng" in p:
+        planner.route_rng.bit_generator.state = p["route_rng"]
+    planner.pos_fills = {}
+    for key, q in p.get("pos_fills", p["pos"]).items():
+        # State files from before listings keyed fills by (book, symbol).
+        if len(key) == 2:
+            key = (key[0], key[1], mkt.l_exchange[mkt.primary_listing[mkt.sym_idx[key[1]]]])
+        planner.pos_fills[key] = q
+    planner.effects = [e if len(e) == 5 else (e[0], e[1], e[2], OTC_VENUE, e[3]) for e in p["effects"]]
     planner.settle = p["settle"]
     planner.targets = p["targets"]
     planner.scripted = p["scripted"]
@@ -2339,19 +2700,21 @@ def restore_from_db(args, prefix: str, mkt: MarketModel, planner: DeskPlanner, s
     """No state file: rebuild the state from what the database holds. Last mid
     per contract gives the level factors (S restarts at zero and the pull to
     the live anchor does the rest); positions come from the last snapshot plus
-    today's fills and non-cancelled bookings."""
+    today's fills and non-cancelled bookings, all per venue."""
     t = lambda n: table_name(n, prefix)
     with connect_qwp(args) as conn:
-        mids = query_df(conn, f"SELECT symbol, mid(bid, ask) AS mid FROM {t('quotes')} LATEST ON ts PARTITION BY symbol")
+        primaries = ", ".join(f"'{e}'" for e in sorted({v[0][0] for v in LISTINGS.values()} | {"FX_FEED"}))
+        mids = query_df(conn, f"SELECT symbol, mid(bid, ask) AS mid FROM {t('quotes')} "
+                              f"WHERE source IN ({primaries}) LATEST ON ts PARTITION BY symbol")
         mid = dict(zip(mids.symbol.astype(str), mids["mid"].astype(float)))
         day_start = start_sec - start_sec % 86400
-        snaps = query_df(conn, f"SELECT book, symbol, qty FROM {t('position_snapshots')} "
+        snaps = query_df(conn, f"SELECT book, symbol, venue, qty FROM {t('position_snapshots')} "
                                f"WHERE ts = (SELECT max(ts) FROM {t('position_snapshots')})")
-        fills = query_df(conn, f"SELECT book, symbol, sum(qty) AS qty FROM {t('fills')} "
-                               f"WHERE ts >= '{ns_to_iso(day_start * NS)}' GROUP BY book, symbol")
+        fills = query_df(conn, f"SELECT book, symbol, venue, sum(qty) AS qty FROM {t('fills')} "
+                               f"WHERE ts >= '{ns_to_iso(day_start * NS)}' GROUP BY book, symbol, venue")
         deals = query_df(conn, f"SELECT book, symbol, sum(qty) AS qty FROM ("
                                f"(SELECT * FROM {t('trade_events')} LATEST ON booked_ts PARTITION BY trade_id) "
-                               f"WHERE status != 'CANCELLED' AND channel != 'EXCH' AND trade_ts >= '{ns_to_iso(day_start * NS)}'"
+                               f"WHERE status != 'CANCELLED' AND channel != 'EXCH' AND booked_ts >= '{ns_to_iso(day_start * NS)}'"
                                f") GROUP BY book, symbol")
         settle = query_df(conn, f"SELECT symbol, price FROM {t('settlements')} LATEST ON ts PARTITION BY symbol")
     live = dict(mkt.anchors)
@@ -2365,11 +2728,14 @@ def restore_from_db(args, prefix: str, mkt: MarketModel, planner: DeskPlanner, s
     mkt.anchors = saved
     planner.pos = {}
     planner.pos_fills = {}
+    # The snapshot is the base position per venue (OTC included); today's fills
+    # and today's voice bookings move it.
     for df in (snaps, fills):
         for r in df.itertuples():
-            planner._add_pos(str(r.book), str(r.symbol), float(r.qty), fill=True)
+            planner._add_pos(str(r.book), str(r.symbol), float(r.qty), str(r.venue))
     for r in deals.itertuples():
-        planner._add_pos(str(r.book), str(r.symbol), float(r.qty))
+        planner._add_pos(str(r.book), str(r.symbol), float(r.qty), OTC_VENUE)
+    planner.effects = []
     planner.settle = {str(r.symbol): float(r.price) for r in settle.itertuples()}
     planner.planned_through = start_sec // 60 - 1
     print(f"[INFO] State rebuilt from the database: {len(mid)} quoted contracts, "
@@ -2386,6 +2752,7 @@ def write_static_rows(args, mkt: MarketModel, planner: DeskPlanner, gen: SpanGen
     with connect_qwp(args, sender_id=sender_tag(args, "static"), auto_flush_interval=1000) as db, db.sender() as sender:
         emitter = SortedEmitter(sender, args.prefix, args.table_set, 1_000_000)
         emitter.emit("instruments", instruments_df(mkt.inst))
+        emitter.emit("listings", listings_df(mkt.listings))
         emitter.emit("limits", limits_df())
         emitter.emit("demo_events", demo_events_df(planner.demo_events))
         day_sec = start_ns // NS - (start_ns // NS) % 86400
@@ -2421,10 +2788,10 @@ def run_backfill(args, start_ns: int, end_ns: int, anchors: dict, story: StoryCl
         planner.plan_minute(m)
         if (m - m0) % 720 == 0:
             print(f"[PLAN] {ns_to_iso(m * MINUTE_NS)} fills={len(planner.fills):,} bookings={len(planner.events):,}", flush=True)
-    fills, events, snaps = planner.take_rows()
-    desk = {"fills": fills, "trade_events": events, "position_snapshots": snaps}
-    print(f"[PLAN] Desk activity planned in {time.time() - t0:.0f}s: {len(fills):,} fills, "
-          f"{len(events):,} booking rows, {len(snaps):,} snapshot rows.", flush=True)
+    desk = planner.take_rows()
+    print(f"[PLAN] Desk activity planned in {time.time() - t0:.0f}s: {len(desk['fills']):,} fills, "
+          f"{len(desk['trade_events']):,} booking rows, {len(desk['position_snapshots']):,} snapshot rows, "
+          f"{len(desk['quotes']):,} secondary-venue book quotes.", flush=True)
     for t, act, what in planner.demo_events:
         when = t.isoformat() if isinstance(t, datetime.date) else ns_to_iso(t * NS)
         print(f"[STORY] {when}  {act:12s} {what}", flush=True)
@@ -2478,15 +2845,13 @@ def run_realtime(args, start_ns: int, end_ns: Optional[int], anchors: dict, stor
               f"{sum(len(v) for v in desk.values())} pending desk rows.", flush=True)
     else:
         t = start_ns
-        desk = {"fills": pd.DataFrame(columns=FILL_COLS), "trade_events": pd.DataFrame(columns=EVENT_COLS),
-                "position_snapshots": pd.DataFrame(columns=SNAP_COLS)}
+        desk = planner.take_rows()
         if args.incremental:
             restore_from_db(args, prefix, mkt, planner, t // NS)
         else:
             mkt.init_path(t // NS // 60)
             planner.initial_positions(t // NS)
-            f, e, p = planner.take_rows()
-            desk = {"fills": f, "trade_events": e, "position_snapshots": p}
+            desk = planner.take_rows()
     mkt.pull_to_anchor = True
     gen = SpanGenerator(mkt, story, args.seed, args.scale_factor)
     if state is None and not args.incremental:
@@ -2505,10 +2870,8 @@ def run_realtime(args, start_ns: int, end_ns: Optional[int], anchors: dict, stor
             planner.plan_minute(planner.planned_through + 1)
             changed = True
         if changed:
-            f, e, p = planner.take_rows()
-            desk = {"fills": pd.concat([desk["fills"], f], ignore_index=True),
-                    "trade_events": pd.concat([desk["trade_events"], e], ignore_index=True),
-                    "position_snapshots": pd.concat([desk["position_snapshots"], p], ignore_index=True)}
+            new = planner.take_rows()
+            desk = {k: pd.concat([desk[k], v], ignore_index=True) if k in desk else v for k, v in new.items()}
 
     slice_ns = args.realtime_slice_ms * 1_000_000
     ahead_ns = 2 * NS

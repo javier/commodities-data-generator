@@ -12,8 +12,11 @@
 -- Table names carry the generator's default --prefix (energy_). A different prefix
 -- means a search and replace on "energy_".
 --
--- Every contract has two names: symbol (the desk's readable id, TTF_Jan-27) and
--- exchange_symbol (the exchange's own, TFM FMF0027).
+-- An instrument (symbol, the desk's readable id: TTF_Jan-27) is the risk object: one
+-- fair value, one position for risk and PnL. A listing is where it trades: TTF_Jan-27
+-- is TFM FMF0027 on ICE Endex and G3BM 2027-01 on EEX, same risk, two clearing houses.
+-- Fills carry the listing as (symbol, venue), quotes as (symbol, source). Cells at
+-- instrument grain show the primary listing's exchange_symbol.
 -- Tenor is relative: M1 is the front month today, Q1 the first listed quarter, Z1
 -- the first carbon December. The energy_tenors view computes it at query time, so it
 -- rolls; cells about a past instant compute it as of @asof instead.
@@ -41,15 +44,33 @@ UNION ALL SELECT 'da_prices', count() FROM energy_da_prices WHERE ts IN @demo_da
 UNION ALL SELECT 'position_snapshots', count() FROM energy_position_snapshots WHERE ts IN @demo_day;
 
 -- @@ 0c_instrument_master
--- The instrument master: every unexpired contract with both its names, the venue,
--- today's relative tenor, delivery, lot and quoting unit. When someone asks "what is
--- TTF_Jan-27 on the exchange", this is the answer: TFM FMF0027 on ICE Endex.
-SELECT t.curve, t.tenor, t.symbol, t.exchange_symbol, c.exchange,
-       t.delivery_start, t.expiry, c.lot_size, c.unit, c.ccy
-FROM energy_tenors t
-JOIN energy_instruments c ON (symbol)
-ORDER BY t.curve, t.granularity, t.tenor_n;
+-- The instrument master, one row per listing: every unexpired contract with its
+-- relative tenor and every venue it trades on, with the exchange's own symbol, the
+-- clearing house, lot and tick, and the expected share of the desk's screen fills.
+-- TTF, EUA and UK power are dual-listed (ICE and EEX); everything else trades in one place.
+SELECT curve, tenor, symbol, exchange, exchange_symbol, ccp, lot_size, tick_size,
+       is_primary, liquidity_share, mic, exchange_code, exchange_physical_code,
+       delivery_start, expiry, unit, ccy
+FROM energy_instrument_master
+ORDER BY curve, granularity, tenor_n, is_primary DESC;
 
+-- @@ 0d_listing_lookup
+-- "What is this exchange code?" Paste any exchange symbol into @exchange_symbol: the
+-- listing it belongs to, the instrument behind it, and that venue's latest quote today.
+DECLARE @demo_day := '2026-10-07', @exchange_symbol := 'G3BM 2026-11'
+WITH l AS (
+  SELECT symbol, exchange, exchange_symbol, ccp, lot_size, is_primary FROM energy_listings
+  WHERE exchange_symbol = @exchange_symbol
+),
+last_q AS (
+  SELECT symbol, source, ts, bid, ask, bid_size, ask_size FROM energy_quotes
+  WHERE ts IN @demo_day
+  LATEST ON ts PARTITION BY symbol, source
+)
+SELECT l.exchange_symbol, l.symbol, l.exchange, l.ccp, l.is_primary, l.lot_size,
+       q.ts AS last_quote_ts, q.bid, q.ask, q.bid_size, q.ask_size
+FROM l
+JOIN last_q q ON q.symbol = l.symbol AND q.source = l.exchange;
 
 -- =====================================================================================
 -- ACT 1 · INTRADAY PnL
@@ -256,6 +277,7 @@ ORDER BY p.ts, p.book, p.symbol;
 -- HORIZON JOIN pairs every fill with the prevailing quote at t+0, t+1s, ... t+15m.
 -- CRUDE's markout rises with the horizon (it trades with a view); PRODUCTS always
 -- crosses the spread and never earns it back, so it sits flat and negative.
+-- Each fill is marked out against the quote on the venue it was done on.
 -- The day filter sits on the fills side, inside the parentheses: a WHERE after the
 -- join is applied after it and makes the join read every quote in the table.
 DECLARE @demo_day := '2026-10-07'
@@ -264,9 +286,24 @@ SELECT h.offset / 1000000 AS horizon_s,
        count() AS fills,
        round(avg(10000 * CASE WHEN t.qty > 0 THEN 1 ELSE -1 END * (mid(q.bid, q.ask) - t.px) / t.px), 2)::decimal(8,2) AS markout_bps
 FROM (energy_fills WHERE ts IN @demo_day) AS t
-HORIZON JOIN energy_quotes AS q ON (symbol)
+HORIZON JOIN energy_quotes AS q ON (t.symbol = q.symbol AND t.venue = q.source)
 LIST (0, 1s, 10s, 1m, 5m, 15m) AS h
 ORDER BY t.book, horizon_s;
+
+-- @@ 1e_markouts_by_venue
+-- The same markout split by venue for the dual-listed curves (TTF, EUA, UK power).
+-- The secondary venue starts further underwater at horizon 0, because it pays a wider
+-- spread, and otherwise behaves like the primary: same instrument, same risk.
+DECLARE @demo_day := '2026-10-07'
+SELECT h.offset / 1000000 AS horizon_s,
+       t.curve,
+       t.venue,
+       count() AS fills,
+       round(avg(10000 * CASE WHEN t.qty > 0 THEN 1 ELSE -1 END * (mid(q.bid, q.ask) - t.px) / t.px), 2)::decimal(8,2) AS markout_bps
+FROM (energy_fills WHERE ts IN @demo_day AND curve IN ('TTF', 'EUA', 'UKPWR')) AS t
+HORIZON JOIN energy_quotes AS q ON (t.symbol = q.symbol AND t.venue = q.source)
+LIST (0, 1s, 10s, 1m, 5m, 15m) AS h
+ORDER BY t.curve, t.venue, horizon_s;
 
 -- @@ 1d_markouts_by_counterparty
 -- Who adversely selects us: the same markout on broker and bilateral deals, by
@@ -344,8 +381,9 @@ ORDER BY pct_of_limit_peak DESC;
 -- the CRUDE / BRENT line is almost entirely the Brent front month.
 DECLARE @demo_day := '2026-10-07'
 WITH sod AS (
-  SELECT book, curve, symbol, qty FROM energy_position_snapshots
+  SELECT book, curve, symbol, sum(qty) AS qty FROM energy_position_snapshots
   WHERE ts = @demo_day::timestamp
+  GROUP BY book, curve, symbol
 ),
 traded AS (
   SELECT ts, book, curve, symbol, sum(qty) OVER (PARTITION BY book, symbol ORDER BY ts) AS traded
@@ -463,6 +501,102 @@ GROUP BY book, curve, bucket, unit
 ORDER BY book, curve, bucket;
 
 
+-- @@ 2e_position_by_instrument_vs_venue
+-- Same risk, two margin calls. For each book and dual-listed instrument: the net
+-- position (what risk sees) next to the position on each venue (what each clearing
+-- house margins), from the opening book plus today's fills on that venue. The venue
+-- rows add up to the instrument. Today's fills come from the positions_live_by_venue
+-- live view (beta in 10.0); 2e_twin_window_function is the same cell over fills.
+DECLARE @demo_day := '2026-10-07'
+WITH sod AS (
+  SELECT book, symbol, venue, sum(qty) AS qty FROM energy_position_snapshots
+  WHERE ts = @demo_day::timestamp AND curve IN ('TTF', 'EUA', 'UKPWR')
+  GROUP BY book, symbol, venue
+),
+live AS (
+  SELECT book, symbol, venue, pos AS qty FROM energy_positions_live_by_venue
+  WHERE ts IN @demo_day AND curve IN ('TTF', 'EUA', 'UKPWR')
+  LATEST ON ts PARTITION BY book, symbol, venue
+),
+pv AS (
+  SELECT book, symbol, venue, sum(qty) AS venue_qty
+  FROM (SELECT * FROM sod UNION ALL SELECT * FROM live)
+  GROUP BY book, symbol, venue
+),
+w AS (
+  SELECT book, symbol, venue, venue_qty,
+         sum(venue_qty) OVER (PARTITION BY book, symbol) AS instrument_qty,
+         count() OVER (PARTITION BY book, symbol) AS venues
+  FROM pv
+  WHERE venue_qty != 0
+)
+SELECT w.book, w.symbol, t.tenor, w.venue, coalesce(l.ccp, 'BILATERAL') AS ccp, l.exchange_symbol,
+       round(w.venue_qty)::decimal(16,0)      AS venue_qty,
+       round(w.instrument_qty)::decimal(16,0) AS instrument_qty,
+       w.venues
+FROM w
+LEFT JOIN energy_listings l ON l.symbol = w.symbol AND l.exchange = w.venue
+LEFT JOIN energy_tenors t ON t.symbol = w.symbol
+ORDER BY w.venues DESC, w.book, w.symbol, w.venue;
+
+-- @@ 2e_twin_window_function
+-- The same without the live view: today's per-venue position is a running sum over
+-- fills, so the last value of the window is just the total.
+DECLARE @demo_day := '2026-10-07'
+WITH sod AS (
+  SELECT book, symbol, venue, sum(qty) AS qty FROM energy_position_snapshots
+  WHERE ts = @demo_day::timestamp AND curve IN ('TTF', 'EUA', 'UKPWR')
+  GROUP BY book, symbol, venue
+),
+run AS (
+  SELECT ts, book, symbol, venue, sum(qty) OVER (PARTITION BY book, symbol, venue ORDER BY ts) AS qty
+  FROM energy_fills
+  WHERE ts IN @demo_day AND curve IN ('TTF', 'EUA', 'UKPWR')
+),
+live AS (
+  SELECT book, symbol, venue, last(qty) AS qty FROM run GROUP BY book, symbol, venue
+),
+pv AS (
+  SELECT book, symbol, venue, sum(qty) AS venue_qty
+  FROM (SELECT * FROM sod UNION ALL SELECT * FROM live)
+  GROUP BY book, symbol, venue
+),
+w AS (
+  SELECT book, symbol, venue, venue_qty,
+         sum(venue_qty) OVER (PARTITION BY book, symbol) AS instrument_qty,
+         count() OVER (PARTITION BY book, symbol) AS venues
+  FROM pv
+  WHERE venue_qty != 0
+)
+SELECT w.book, w.symbol, t.tenor, w.venue, coalesce(l.ccp, 'BILATERAL') AS ccp, l.exchange_symbol,
+       round(w.venue_qty)::decimal(16,0)      AS venue_qty,
+       round(w.instrument_qty)::decimal(16,0) AS instrument_qty,
+       w.venues
+FROM w
+LEFT JOIN energy_listings l ON l.symbol = w.symbol AND l.exchange = w.venue
+LEFT JOIN energy_tenors t ON t.symbol = w.symbol
+ORDER BY w.venues DESC, w.book, w.symbol, w.venue;
+
+-- @@ 2f_venue_share_of_fills
+-- Where the desk's screen fills went today, per book, dual-listed instrument and venue:
+-- fills, volume and the venue's share of the instrument's fills. Expect about 80/20 on
+-- months and more on the secondary for strips; a book closing a position tends to do it
+-- on the venue where it is open (margin), so single books can lean either way.
+DECLARE @demo_day := '2026-10-07'
+WITH f AS (
+  SELECT book, symbol, venue, count() AS fills, sum(abs(qty)) AS volume
+  FROM energy_fills
+  WHERE ts IN @demo_day AND curve IN ('TTF', 'EUA', 'UKPWR')
+  GROUP BY book, symbol, venue
+)
+SELECT f.book, f.symbol, t.tenor, f.venue, f.fills,
+       round(f.volume)::decimal(16,0) AS volume,
+       round(100.0 * f.fills / sum(f.fills) OVER (PARTITION BY f.book, f.symbol), 1)::decimal(5,1) AS pct_of_instrument_fills
+FROM f
+LEFT JOIN energy_tenors t ON t.symbol = f.symbol
+ORDER BY f.book, f.symbol, f.venue;
+
+
 -- =====================================================================================
 -- ACT 3 · VOLATILITY
 -- Realised vol from 5-minute bars (close-to-close, Parkinson range, RiskMetrics EWMA),
@@ -471,6 +605,8 @@ ORDER BY book, curve, bucket;
 -- prices go negative, which breaks log returns. Tenor here is relative: M1 is the
 -- front month today, so the Samuelson effect reads as "M1 versus M12".
 -- =====================================================================================
+
+
 
 -- @@ 3a_realized_vol_by_tenor
 -- The Samuelson effect: realised vol of every contract on every curve over the last
@@ -742,18 +878,19 @@ now_marks AS (
   LATEST ON ts PARTITION BY symbol
 ),
 tn AS (
-  SELECT symbol, exchange_symbol, curve, granularity, delivery_start,
+  SELECT symbol, curve, granularity, delivery_start,
          granularity || row_number() OVER (PARTITION BY curve, granularity ORDER BY delivery_start) AS tenor_at_asof
   FROM energy_instruments
   WHERE expiry > @asof
 )
-SELECT tn.tenor_at_asof, t.symbol, tn.exchange_symbol,
+SELECT tn.tenor_at_asof, t.symbol, l.exchange_symbol,
        round(t.price, 3)::decimal(10,3)           AS at_asof,
        round(n.price, 3)::decimal(10,3)           AS now,
        round(n.price - t.price, 3)::decimal(10,3) AS since_asof
 FROM then_marks t
 JOIN now_marks n ON (symbol)
 JOIN tn ON (symbol)
+JOIN energy_listings l ON l.symbol = t.symbol AND l.is_primary
 WHERE tn.granularity IN ('M', 'Q', 'S') AND tn.delivery_start < dateadd('M', 19, @demo_day::timestamp)
 ORDER BY tn.granularity, tn.delivery_start;
 
@@ -783,6 +920,7 @@ ORDER BY j.ts;
 -- @@ 5a_ticks_half_hour
 -- The same spread tick by tick over 30 minutes from @asof: every JKM tick paired with
 -- the latest TTF and EURUSD ticks, and TOLERANCE 30s refuses a leg older than that.
+-- TTF is read from its primary venue, ICE Endex (5f compares the two venues).
 -- This is the "legs tick at different times" point; the day-long series above is the
 -- chart. Each leg is the quotes table with a filter, not a CTE: that is the form the
 -- ASOF JOIN optimiser recognises; the same join over CTEs takes a slow path.
@@ -794,7 +932,7 @@ SELECT jkm.ts, jkm.symbol AS jkm_symbol, ttf.symbol AS ttf_symbol,
        ttf.ts AS ttf_tick_ts,
        eur.ts AS eur_tick_ts
 FROM (energy_quotes WHERE symbol = @jkm AND ts >= @asof AND ts < dateadd('m', 30, @asof)) jkm
-ASOF JOIN (energy_quotes WHERE symbol = @ttf AND ts >= dateadd('m', -5, @asof) AND ts < dateadd('m', 30, @asof)) ttf TOLERANCE 30s
+ASOF JOIN (energy_quotes WHERE symbol = @ttf AND source = 'ICE_ENDEX' AND ts >= dateadd('m', -5, @asof) AND ts < dateadd('m', 30, @asof)) ttf TOLERANCE 30s
 ASOF JOIN (energy_quotes WHERE symbol = 'EURUSD' AND ts >= dateadd('m', -5, @asof) AND ts < dateadd('m', 30, @asof)) eur TOLERANCE 30s
 ORDER BY jkm.ts;
 
@@ -840,13 +978,14 @@ ORDER BY ts;
 
 -- @@ 5c_ticks_half_hour
 -- The same spread on every power tick over 30 minutes from @asof, each paired with the
--- latest gas and carbon ticks within a one-minute tolerance.
+-- latest gas and carbon ticks within a one-minute tolerance. Power is read from its
+-- primary venue, ICE.
 DECLARE @asof := '2026-10-07T12:00:00.000000Z', @pwr := 'UKPWR_Nov-26', @nbp := 'NBP_Nov-26', @uka := 'UKA_Dec-26'
 SELECT pwr.ts, pwr.symbol AS power_symbol, nbp.symbol AS gas_symbol, uka.symbol AS carbon_symbol,
        round(mid(pwr.bid, pwr.ask) - mid(nbp.bid, nbp.ask) * 0.341214 / 0.5 - mid(uka.bid, uka.ask) * 0.2 / 0.5, 2)::decimal(8,2) AS clean_spark_gbp_mwh,
        nbp.ts AS gas_tick_ts,
        uka.ts AS carbon_tick_ts
-FROM (energy_quotes WHERE symbol = @pwr AND ts >= @asof AND ts < dateadd('m', 30, @asof)) pwr
+FROM (energy_quotes WHERE symbol = @pwr AND source = 'ICE' AND ts >= @asof AND ts < dateadd('m', 30, @asof)) pwr
 ASOF JOIN (energy_quotes WHERE symbol = @nbp AND ts >= dateadd('m', -5, @asof) AND ts < dateadd('m', 30, @asof)) nbp TOLERANCE 1m
 ASOF JOIN (energy_quotes WHERE symbol = @uka AND ts >= dateadd('m', -5, @asof) AND ts < dateadd('m', 30, @asof)) uka TOLERANCE 1m
 ORDER BY pwr.ts;
@@ -901,6 +1040,62 @@ SELECT @pwr AS power_symbol, @nbp AS gas_symbol,
        round(stddev(d_pwr), 3)::decimal(8,3)              AS power_5m_stdev_gbp,
        round(stddev(d_gas), 3)::decimal(8,3)              AS gas_5m_stdev_gbp
 FROM r;
+
+
+-- @@ 5f_cross_venue_spread
+-- Chart: the TTF front month on its two venues, ICE Endex minus EEX mid (each venue's
+-- average mid in the second), on a 1-second grid through European hours, in ticks. The basis hugs zero (EEX re-prices off the
+-- same fair value, a fraction of a second late, with a small slow drift) and the
+-- planted divergences stand out: EEX two to four ticks away for 5 to 30 seconds, then
+-- closed. Say: this is the cheapest arbitrage monitor you will ever build.
+DECLARE @demo_day := '2026-10-07', @ttf := 'TTF_Nov-26'
+WITH b AS (
+  SELECT ts, source, avg(mid(bid, ask)) AS mid
+  FROM energy_quotes
+  WHERE symbol = @ttf AND ts >= dateadd('h', 7, @demo_day::timestamp) AND ts < dateadd('h', 17, @demo_day::timestamp)
+  SAMPLE BY 1s
+),
+g AS (
+  SELECT ts,
+         max(CASE WHEN source = 'ICE_ENDEX' THEN mid END) AS ice_endex_mid,
+         max(CASE WHEN source = 'EEX' THEN mid END)       AS eex_mid
+  FROM b
+  GROUP BY ts
+)
+SELECT ts, @ttf AS symbol,
+       round(ice_endex_mid, 4)::decimal(10,4)                    AS ice_endex_mid,
+       round(eex_mid, 4)::decimal(10,4)                          AS eex_mid,
+       round((ice_endex_mid - eex_mid) / 0.005, 2)::decimal(8,2) AS basis_ticks
+FROM g
+ORDER BY ts;
+
+-- @@ 5f_divergence_episodes
+-- The same comparison as a list: every minute in which the two venues sat 1.75 ticks
+-- or more apart for at least three seconds, with the worst gap. Normal basis noise is
+-- well under a tick, so what is left is the planted divergences: a few per front month
+-- per European day, each lasting seconds.
+DECLARE @demo_day := '2026-10-07', @ttf := 'TTF_Nov-26'
+WITH b AS (
+  SELECT ts, source, avg(mid(bid, ask)) AS mid
+  FROM energy_quotes
+  WHERE symbol = @ttf AND ts >= dateadd('h', 7, @demo_day::timestamp) AND ts < dateadd('h', 17, @demo_day::timestamp)
+  SAMPLE BY 1s
+),
+g AS (
+  SELECT ts, (max(CASE WHEN source = 'ICE_ENDEX' THEN mid END) - max(CASE WHEN source = 'EEX' THEN mid END)) / 0.005 AS basis_ticks
+  FROM b
+  GROUP BY ts
+),
+e AS (
+  SELECT timestamp_floor('m', ts) AS minute, count() AS seconds_apart, max(abs(basis_ticks)) AS worst
+  FROM g
+  WHERE abs(basis_ticks) >= 1.75
+  GROUP BY minute
+)
+SELECT minute, @ttf AS symbol, seconds_apart, round(worst, 1)::decimal(6,1) AS worst_gap_ticks
+FROM e
+WHERE seconds_apart >= 3
+ORDER BY minute;
 
 
 -- =====================================================================================
@@ -1213,6 +1408,48 @@ LEFT JOIN energy_tenors t ON (symbol)
 ORDER BY s.max_min DESC;
 
 
+-- @@ 6e_margin_by_ccp
+-- Where the margin calls come from: gross and net notional per book and clearing
+-- house in USD, from the opening book plus today's fills on each venue, at the
+-- latest marks. Positions from broker and bilateral deals sit under BILATERAL.
+DECLARE @demo_day := '2026-10-07'
+WITH pos AS (
+  SELECT book, symbol, venue, sum(qty) AS qty
+  FROM (
+    SELECT book, symbol, venue, qty FROM energy_position_snapshots WHERE ts = @demo_day::timestamp
+    UNION ALL
+    SELECT book, symbol, venue, qty FROM energy_fills WHERE ts IN @demo_day
+  )
+  GROUP BY book, symbol, venue
+),
+marks AS (
+  SELECT symbol, price FROM energy_curve_marks
+  WHERE ts IN @demo_day
+  LATEST ON ts PARTITION BY symbol
+),
+fx AS (
+  SELECT symbol, mid(bid, ask) AS usd FROM energy_quotes
+  WHERE curve = 'FX' AND ts IN @demo_day
+  LATEST ON ts PARTITION BY symbol
+),
+n AS (
+  SELECT p.book, coalesce(l.ccp, 'BILATERAL') AS ccp,
+         p.qty * m.price * i.px_factor * coalesce(x.usd, 1.0) AS notional
+  FROM pos p
+  JOIN marks m ON m.symbol = p.symbol
+  JOIN energy_instruments i ON i.symbol = p.symbol
+  LEFT JOIN energy_listings l ON l.symbol = p.symbol AND l.exchange = p.venue
+  LEFT JOIN fx x ON x.symbol = i.fx_symbol
+)
+SELECT book, ccp,
+       round(sum(abs(notional)))::decimal(16,0) AS gross_notional_usd,
+       round(sum(notional))::decimal(16,0)      AS net_notional_usd,
+       count()                                  AS positions
+FROM n
+GROUP BY book, ccp
+ORDER BY book, gross_notional_usd DESC;
+
+
 -- =====================================================================================
 -- ACT 7 · PRICING MODEL VALIDATION
 -- Continuous evidence that the fair-value model agrees with the market: bias, RMSE
@@ -1393,20 +1630,44 @@ LEFT JOIN energy_tenors t ON (symbol)
 ORDER BY v.first_seen;
 
 -- @@ 7d_stale_quote_coverage
--- Chart: the share of model prices that could be graded against a fresh quote, minute
--- by minute and contract by contract around the planted feed outage (8.9). ASOF JOIN
--- with TOLERANCE returns null instead of a stale quote, so coverage drops to zero for
--- three minutes on the TTF months (ICE Endex feed down) and the validation never
--- grades against stale data. Front six TTF months: outside the outage every minute grades.
+-- One venue went dark, the instrument did not. Minute by minute around the planted feed
+-- outage (8.9), for the front month of each dual-listed curve: ticks on the primary
+-- venue and on EEX, the curve mark's source and the venue it came from, and how many
+-- model prices could be graded against a fresh quote (ASOF JOIN with a 10-second
+-- TOLERANCE returns null rather than a stale quote). EEX drops to zero for three
+-- minutes; the primary keeps ticking, marks stay MARKET from it, grading never stops.
 DECLARE @demo_day := '2026-10-07', @outage_start := '2026-10-07T10:00:00.000000Z', @outage_end := '2026-10-07T10:03:00.000000Z'
-SELECT m.ts, m.symbol, c.exchange_symbol,
-       count()                                                   AS model_rows,
-       count(q.bid)                                              AS graded,
-       round(100.0 * count(q.bid) / count(), 1)::decimal(5,1)    AS graded_pct
-FROM energy_model_prices m
-ASOF JOIN energy_quotes q ON (symbol) TOLERANCE 10s
-JOIN energy_instruments c ON (symbol)
-WHERE m.curve = 'TTF' AND m.model_version = 'champion_v1'
-  AND c.delivery_start < dateadd('M', 7, @demo_day::timestamp)
-  AND m.ts >= dateadd('m', -5, @outage_start) AND m.ts < dateadd('m', 6, @outage_end)
-SAMPLE BY 1m;
+WITH fronts AS (
+  SELECT symbol, curve, primary_exchange FROM energy_tenors
+  WHERE curve IN ('TTF', 'EUA', 'UKPWR') AND tenor IN ('M1', 'Z1')
+),
+ticks AS (
+  SELECT ts, symbol,
+         sum(CASE WHEN source = 'EEX' THEN 0 ELSE 1 END) AS primary_ticks,
+         sum(CASE WHEN source = 'EEX' THEN 1 ELSE 0 END) AS eex_ticks
+  FROM energy_quotes
+  WHERE ts >= dateadd('m', -3, @outage_start) AND ts < dateadd('m', 4, @outage_end)
+    AND curve IN ('TTF', 'EUA', 'UKPWR')
+  SAMPLE BY 1m
+),
+marks AS (
+  SELECT ts, symbol, source AS mark_source, venue AS mark_venue FROM energy_curve_marks
+  WHERE ts >= dateadd('m', -3, @outage_start) AND ts < dateadd('m', 4, @outage_end) AND version = 1
+    AND curve IN ('TTF', 'EUA', 'UKPWR')
+),
+graded AS (
+  SELECT m.ts, m.symbol, count() AS model_rows, count(q.bid) AS graded
+  FROM energy_model_prices m
+  ASOF JOIN energy_quotes q ON (symbol) TOLERANCE 10s
+  WHERE m.model_version = 'champion_v1' AND m.curve IN ('TTF', 'UKPWR')
+    AND m.ts >= dateadd('m', -3, @outage_start) AND m.ts < dateadd('m', 4, @outage_end)
+  SAMPLE BY 1m
+)
+SELECT k.ts, k.symbol, f.primary_exchange, k.primary_ticks, k.eex_ticks,
+       mk.mark_source, mk.mark_venue, g.model_rows, g.graded
+FROM ticks k
+JOIN fronts f ON f.symbol = k.symbol
+LEFT JOIN marks mk ON mk.ts = k.ts AND mk.symbol = k.symbol
+LEFT JOIN graded g ON g.ts = k.ts AND g.symbol = k.symbol
+ORDER BY k.ts, k.symbol;
+

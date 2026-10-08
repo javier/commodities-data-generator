@@ -89,12 +89,13 @@ workers mostly buys O3 merge work, not speed.
 --seed                  everything is deterministic given the seed and the window
 ```
 
-Volumes at `--scale_factor 1` for 4 October 00:00 to 7 October 15:50 UTC (a Sunday and
-three weekdays): quotes 182M, curve_marks 1.3M, model_prices 760k, iv_marks 190k,
-fills 15k, trade_events 17k, settlements 490, position_snapshots 335, plus the
-materialized views (quotes_1m 930k, quotes_5m 240k). A full weekday is roughly 50M quotes
-(low thousands of ticks a second in European hours, 10% at night); the load took about
-90 seconds on a laptop with three workers. Fill counts scale with the same factor. The
+Volumes at `--scale_factor 1` for 4 October 00:00 to 8 October 12:00 UTC (a Sunday,
+three full weekdays and a morning): quotes 258M (28M of them on EEX), curve_marks 1.6M,
+model_prices 930k, iv_marks 233k, fills 19k, trade_events 21k, settlements 729,
+position_snapshots 729, plus the materialized views (quotes_1m 1.15M, quotes_5m 297k). A
+full weekday is about 71M quotes, 7.5M of them on EEX (low thousands of ticks a second
+in European hours, 10% at night); the load took about two minutes on a laptop with three
+workers. Fill counts scale with the same factor. The
 Enterprise runner defaults to 0.5 for the gp3 volume.
 
 ### Real-time: `--mode real-time`
@@ -112,9 +113,9 @@ which saves the state file.
 
 ### Schema conventions
 
-- Every table is WAL with a designated timestamp. `instruments` and `limits` are the only
-  tables that carry the epoch as their timestamp (small lookup tables); everything else,
-  `demo_events` included, carries event time.
+- Every table is WAL with a designated timestamp. `instruments`, `listings` and `limits`
+  are the only tables that carry the epoch as their timestamp (small lookup tables, with
+  `ts` as the last column); everything else, `demo_events` included, carries event time.
 - `DEDUP UPSERT KEYS` on every table's natural key: re-running a backfill over the same
   window is an upsert, reference rows are rewritten harmlessly.
 - Per-column `PARQUET(...)` encodings: `delta_binary_packed` for timestamps,
@@ -129,29 +130,32 @@ which saves the state file.
 - `quotes` and `fills` use `TIMESTAMP_NS`; everything else `TIMESTAMP`. Do not subtract
   the two in SQL (`datediff` is unit-safe, raw `-` is not).
 - A table that exists with a different schema is a hard error, not something the
-  generator works around. `instruments` gained its symbology columns (and moved `ts` to
-  the last column) after the first release: an instance loaded before that needs
-  `DROP VIEW energy_tenors; DROP TABLE energy_instruments;` once, then any backfill
-  recreates both.
+  generator works around. The listings change reshaped `instruments` (the exchange
+  columns moved to `listings`), `limits` (`ts` last), `curve_marks` and
+  `position_snapshots` (a `venue` column) and `quotes_1m` (primary venues only): an
+  instance loaded before it needs a clean reload. Drop every `energy_` view, live view,
+  materialized view and table, then run the backfill.
 
 ## The market
 
-| Curve | Complex | Unit | Ccy | Contracts | Venue (MIC), product code | Anchor |
+| Curve | Complex | Unit | Ccy | Contracts | Venues (MIC), product code, primary first | Anchor |
 |---|---|---|---|---|---|---|
 | BRENT | OIL | bbl | USD | 24 months | ICE Futures Europe (IFEU), `BRN` | `BZ=F` |
-| WTI | OIL | bbl | USD | 24 months | CME NYMEX, `CL` | `CL=F` (Brent minus the live spread) |
-| GASOIL | OIL | t | USD | 18 months | ICE Futures Europe, `G` (Low Sulphur Gasoil) | `HO=F` x 42 as the crack over Brent, x 7.45 |
-| TTF | GAS | MWh | EUR | 38 months, 8 quarters, 4 seasons, 3 cals | ICE Endex (NDEX), `TFM` | `TTF=F` |
+| WTI | OIL | bbl | USD | 24 months | CME NYMEX (XNYM), `CL` | `CL=F` (Brent minus the live spread) |
+| GASOIL | OIL | t | USD | 18 months | ICE Futures Europe, `ULS` (Low Sulphur Gasoil) | `HO=F` x 42 as the crack over Brent, x 7.45 |
+| TTF | GAS | MWh | EUR | 38 months, 8 quarters, 4 seasons, 3 cals | ICE Endex (NDEX), `TFM`; EEX (XEEE), `G3BM`/`G3BQ`/`G3BS`/`G3BY` | `TTF=F` |
 | NBP | GAS | therm (pence, `px_factor` 0.01) | GBP | same strip | ICE Futures Europe, `GWM` | TTF converted at live EURGBP plus a basis |
 | JKM | LNG | MMBtu | USD | 12 months | ICE Futures Europe, `JKM` | `JKM=F` (TTF in $/MMBtu plus the live Asia premium) |
-| UKPWR | POWER | MWh | GBP | 38 months, 8 quarters, 4 seasons, 3 cals | ICE Futures Europe, `UBL` (UK Base Electricity, Gregorian) | NBP / 50% + UKA x 0.2 / 50% + clean spark margin |
-| EUA | CARBON | tCO2 | EUR | Dec-26/27/28 | ICE Endex, `ECF` | static bracket (no reliable ticker) |
+| UKPWR | POWER | MWh | GBP | 38 months, 8 quarters, 4 seasons, 3 cals | ICE Futures Europe, `UBL` (UK Base Electricity, Gregorian); EEX, `FUBM`/`FUBQ`/`FUBS`/`FUBY` | NBP / 50% + UKA x 0.2 / 50% + clean spark margin |
+| EUA | CARBON | tCO2 | EUR | Dec-26/27/28 | ICE Endex, `ECF`; EEX, `FEUA` | static bracket (no reliable ticker) |
 | UKA | CARBON | tCO2 | GBP | Dec-26/27/28 | ICE Futures Europe, `UKA` | EUA x EURGBP minus the live discount |
 | FX | | | | EURUSD, GBPUSD, EURGBP | FX_FEED | `EURUSD=X`, `GBPUSD=X` |
 
-Venues and product codes are taken from the exchanges' product pages (checked
-2026-10-08). The `exchange` column reads `ICE`, `ICE_ENDEX` or `CME`; all ICE contracts
-clear at ICE Clear Europe (`ICE_CLEAR_EU`), WTI at `CME_CLEARING`.
+Venues and product codes are taken from the exchanges' own code lists (ICE's product
+code file, EEX's short-code list, checked 2026-10-08). The `exchange` column of
+`listings` reads `ICE`, `ICE_ENDEX`, `EEX` or `CME`; all ICE contracts clear at ICE Clear
+Europe (`ICE_CLEAR_EU`), EEX contracts at European Commodity Clearing (`ECC`), WTI at
+`CME_CLEARING`. EEX lot and tick sizes match the ICE contracts they compete with.
 
 Gas and power months run far enough to cover the last listed cal so every quarter,
 season and cal decomposes into listed months; strips are derived from their months
@@ -169,22 +173,71 @@ business days before delivery; EUA and UKA Decembers the penultimate Monday of D
 (the exchange's last-Monday rule always rolls back a week in December because of the
 Christmas and New Year bank holidays).
 
+## Instruments and listings
+
+An instrument is the thing the desk carries risk in: TTF January 2027 has one fair value
+and one position, wherever it was traded. A listing is that instrument on one venue,
+with its own exchange code, contract name, clearing house, lot and tick. Risk and PnL
+aggregate by instrument; margin aggregates by listing, because each clearing house calls
+margin on what is open with it. A long on ICE Endex and a short on EEX in the same month
+are flat for risk and two open positions for margin.
+
+`instruments` holds one row per contract (curve, delivery period, units, `term_code`,
+`month_code`); `listings` one row per contract and venue (`exchange`, `mic`,
+`exchange_code`, `exchange_physical_code`, `exchange_symbol`, `ccp`, `lot_size`,
+`tick_size`, `is_primary`, `liquidity_share`). The `energy_instrument_master` view joins
+them with the tenors. Three curves are dual-listed: TTF and EUA on ICE Endex (primary)
+and EEX, UK power on ICE Futures Europe (primary) and EEX. Every other curve has one
+listing. `liquidity_share` sums to 1 per instrument: 80/20 on months and carbon
+Decembers, 70/30 on strips, where a second venue picks up more of the business.
+
+The secondary venue's book is thinner and slightly behind: 40% of the primary's tick
+rate, half its displayed size, a spread 1.5 to 2 times wider (drawn per listing), quotes
+50 to 300 ms behind fair value, and a slow cross-venue basis of about a third of a tick.
+On weekdays in European hours the front months of the dual-listed curves also get
+planted divergences, about one every three hours, 2 to 4 ticks for 5 to 30 seconds
+(`5f_divergence_episodes` finds them).
+
+Routing. Each screen order picks a venue at random, weighted by `liquidity_share`,
+doubled on a venue where the book holds the opposite side (closing where you are open
+releases margin) and 1.5 times on the venue showing the better touch for the order's side.
+A fill routed to the secondary venue is capped at its displayed size; the remainder fills
+on the primary 1 microsecond later as a second fill with the same `order_id`, which is
+how an order splits across venues. Every fill on the secondary venue is preceded, one
+nanosecond earlier, by a quote on that venue showing the book the router saw, so an
+`ASOF JOIN` from any EEX fill to EEX quotes finds the price it hit and a displayed size
+at least as large as the fill. While a venue's feed is down the router skips it. On the scale 0.2 comparison run about 19% of month
+fills and 24% of strip fills went to EEX, and about 3% of orders split. Broker and
+bilateral deals are not exchange trades and carry the venue `OTC` in positions.
+
+The planted feed outage silences EEX, not the primary. Marks keep coming from ICE, so
+`curve_marks` stays `MARKET` on the dual-listed curves and carries the `venue` it was
+taken from (the best fresh quote; null on `INTERP` marks).
+
 ## Symbology and tenor
 
-Every contract has two names, both in `instruments`:
+Every contract has a desk name in `instruments` and an exchange name per listing in
+`listings`:
 
 | Name | Example (TTF January 2027) | What it is |
 |---|---|---|
 | `symbol` | `TTF_Jan-27` | The desk's readable id, how a trader says it. Every cell joins on this. |
-| `exchange_symbol` | `TFM FMF0027` | The exchange's own contract name. |
+| `exchange_symbol`, ICE Endex | `TFM FMF0027` | The primary exchange's own contract name. |
+| `exchange_symbol`, EEX | `G3BM 2027-01` | The same contract on the secondary venue. |
 
-ICE builds a futures name as the product code (left-justified to four characters, so
-gasoil is `G   FMV0026`), `F` for futures, the term letter (`M` month, `Q` quarter, `S`
-season, `Y` calendar year), the month code of the first delivery month, `00` for the
-whole period and the two-digit year; a season adds a `.` switch and its last delivery
-month (`GWM FSV0027.H0028` is NBP winter 2027). Carbon Decembers are months with month
-code `Z` (`ECF FMZ0026`). CME uses root, month code and two-digit year (`CLF27`). The
-pieces are also stored separately: `exchange_code`, `term_code`, `month_code`.
+ICE builds a futures name as the logical product code (left-justified to four
+characters, so gasoil is `ULS FMV0026`), `F` for futures, the term letter (`M` month, `Q`
+quarter, `S` season, `Y` calendar year), the month code of the first delivery month, `00`
+for the whole period and the two-digit year; a season adds a `.` switch and its last
+delivery month (`GWM FSV0027.H0028` is NBP winter 2027). Carbon Decembers are months with
+month code `Z` (`ECF FMZ0026`). ICE publishes two codes per product: the logical code
+used in contract names (`ULS` for Low Sulphur Gasoil) and the physical code used on the
+clearing side (`G`). `exchange_code` holds the logical one, `exchange_physical_code` the
+physical one (equal to the logical code on most ICE products and on CME, null on EEX). CME uses root,
+month code and two-digit year (`CLF27`). EEX identifies a contract by product code (one
+per granularity: `G3BM` TTF month, `G3BQ` quarter, `G3BS` season, `G3BY` year) plus
+expiry year and month as separate fields; `exchange_symbol` joins them for display with
+the first delivery month. `term_code` and `month_code` stay in `instruments`.
 
 | Month | F | G | H | J | K | M | N | Q | U | V | X | Z |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -224,7 +277,8 @@ front oil, two to four ticks on front gas and power, widening with tenor and off
 
 Other market tables, all pure functions of the clock: `curve_marks` every minute for
 every contract (`MARKET` from the quotes, `INTERP` from the model when a contract has
-not ticked in five minutes or during the feed outage); `settlements` at 16:30 UTC for
+not ticked in five minutes on any of its venues, with the `venue` the mark was taken
+from: the best fresh quote, so the primary while EEX is down); `settlements` at 16:30 UTC for
 gas, power and carbon and 19:30 UTC for oil, weekdays only; `iv_marks` every five
 minutes for the front twelve months of Brent, TTF and UK power at five delta buckets
 (crude put skew, gas and power call skew); `model_prices` every minute for the first 24
@@ -238,7 +292,9 @@ Books `CRUDE`, `PRODUCTS`, `LNG`, `EU_GAS`, `UK_POWER`, `CARBON`, traders `trade
 `trader_24` (four or five per book), trade support `ops_01` to `ops_06`. Position limits
 per book and curve in `limits`, in delivery units.
 
-`fills` holds exchange executions only (venue `ICE`, `ICE_ENDEX` or `CME` by the contract's exchange): sizes
+`fills` holds exchange executions only, with the `venue` they were routed to (`ICE`,
+`ICE_ENDEX`, `EEX` or `CME`) and an `order_id` shared by the two fills of a split order
+(see Instruments and listings): sizes
 log-normal around five lots with a tail to fifty, strips one to ten lots, a price at the
 touch 60% of the time (`passive = false`) or resting at the touch 40%. Each book's net
 position per curve follows a slow mean-reverting target. `CRUDE` trades with foresight (it
@@ -247,7 +303,7 @@ horizon; `PRODUCTS` always crosses the spread and has no foresight, so its marko
 flat and negative; the other books are coin flips.
 
 `trade_events` is the booking log: every fill is mirrored by STP within 50 to 500 ms with
-the CCP as counterparty; broker and bilateral deals (about 10% of the fill count, strips
+the venue's CCP as counterparty; broker and bilateral deals (about 10% of the fill count, strips
 and back months, 10 to 100 lots capped at 5% of the book's limit) exist only here, booked
 by trade support after a delay (broker median 20 minutes, bilateral median two hours with
 a tail to the next morning). Counterparties are an invented pool of 40 (`BANK_`,
@@ -257,8 +313,10 @@ informed, utilities and industrials uninformed, producers neutral. Background am
 STP-mirrored exchange fills (0.3% and 0.1%) and common on hand-booked voice deals (5%
 and 1%).
 
-`position_snapshots` is written at 00:00 UTC each day: the net position per book and
-contract from fills, deals and bookings as known at that moment, at the last settlement.
+`position_snapshots` is written at 00:00 UTC each day: the net position per book,
+contract and venue from fills, deals and bookings as known at that moment, at the last
+settlement. Broker and bilateral deals sit under the venue `OTC`; summing over venues
+gives the instrument position.
 It anchors intraday PnL (the `ledger` view rewrites it as a pseudo-fill at settlement)
 and the reconstruction.
 
@@ -270,7 +328,8 @@ and the reconstruction.
 | 07:40 to 08:10, unwound by 11:30 | CRUDE buys the Brent front month to about 3M bbl against a 2M limit | `2a`, `2b` |
 | 09:10 deal, 14:30 booking | UK_POWER sells 100 MW of a power season by voice, booked 5h20m late | `6a`, `6b`, `6c`, `6d` |
 | 09:15 to 09:45 | Manual mark on the first TTF quarter 2.50 EUR above its months (trader_11), corrected as version 2 at 09:45 | `4d` |
-| 10:00 to 10:03 | The ICE Endex quote feed (TTF, EUA) goes silent; marks fall back to INTERP, model inputs go stale, grading has no fresh quote | `7d`, `4a` |
+| 10:00 to 10:03 | The EEX quote feed (TTF, EUA, UK power) goes silent; ICE keeps ticking, marks stay `MARKET` from the primary venue, grading carries on | `7d` |
+| 07:00 to 17:00, every weekday | About three times a day per dual-listed front month, EEX sits 2 to 4 ticks off the primary for 5 to 30 seconds (five on TTF Nov-26 on the demo day) | `5f` |
 | 10:05, amended 13:20 | LNG fill booked with 10x the quantity by STP | `6b`, `6c` |
 | 10:30, cancelled 14:05 | EU_GAS broker trade on the TTF quarter booked twice | `6b`, `6c` |
 | 11:00 | Cold-snap forecast: Nov to Feb gas and power prices step up 8% at the front over 20 minutes (`--winter_repricing_pct`), damped along the curve; the champion model never adapts, the challenger refits on the hour | `7a`, `7b` |
@@ -289,19 +348,27 @@ Every cell returns the contract it is about: contract-grain cells carry `symbol`
 drill-down sibling right below them.
 
 0. **Orientation.** `0a` the planted events, `0b` volumes, `0c_instrument_master` every
-   unexpired contract with its desk symbol and exchange symbol, venue, tenor, delivery and lot.
+   unexpired listing with its desk symbol, exchange symbol, venue, clearing house, tenor,
+   delivery and lot, from the `energy_instrument_master` view. `0d_listing_lookup` the
+   other way round: paste an exchange symbol (`G3BM 2026-11`) and get the instrument
+   behind it and that venue's latest quote.
 1. **Intraday PnL.** `1a` PnL by book in USD: the opening book revalued from settlement
    against today's trading, one GROUP BY over the `ledger` view; `1a_pnl_by_book_by_symbol`
    the same per contract. `1b` the PnL curve with drawdown on a 5-minute grid from the
    `positions_live` live view, `1b_twin_window_function` the same cell as window
    functions over `fills` (live views are beta in 10.0), `1b_pnl_curve_by_symbol` one
    series per contract. `1c` markouts by desk with `HORIZON JOIN` at 0, 1s, 10s, 1m, 5m,
-   15m on raw ticks. `1d` markouts by counterparty type over the booking log, from deal
+   15m on raw ticks, each fill against its own venue's quotes; `1e_markouts_by_venue` the
+   same split by venue (EEX fills start further from mid: the wider spread). `1d` markouts by counterparty type over the booking log, from deal
    time, at 1m to 4h against the 1-minute bars (voice deals are timed to the minute).
 2. **Exposure.** `2a` net position against limits, now versus intraday peak (the breach),
    `2a_limits_by_symbol` which contracts make it up. `2b` the breach chart. `2c` the
    delivery-month ladder with strips spread over their months, `PIVOT`ed by curve.
    `2d_exposure_by_tenor` the risk-report view: front, M2 to M6, back and strips.
+   `2e_position_by_instrument_vs_venue` the instrument position next to its pieces per
+   venue (live view `positions_live_by_venue`, with `2e_twin_window_function` as the
+   window-function twin): flat for risk can still be open at two clearing houses.
+   `2f_venue_share_of_fills` where each book's fills went, per instrument.
 3. **Volatility.** `3a` realised vol of every contract on every curve by relative tenor
    (the Samuelson effect: M1 about twice M12). `3b` rolling realised, Parkinson and EWMA
    (`avg(x, 'alpha', 0.06) OVER`) on the front month. `3c` the implied term structure
@@ -317,10 +384,15 @@ drill-down sibling right below them.
    over 30 minutes with `ASOF JOIN ... TOLERANCE` on every leg (the "legs tick at
    different times" point, with each leg's tick time in the output); `5d` the forward
    clean spark curve by power tenor; `5e` leg correlation and the hedge ratio.
+   `5f_cross_venue_spread` the TTF front month on ICE Endex minus EEX, second by second
+   through European hours, in ticks; `5f_divergence_episodes` the minutes where the two
+   venues sat 1.75 ticks or more apart for at least three seconds (on the demo day it
+   finds the five planted TTF episodes and nothing else).
 6. **Reconstruction.** `6a` the book as known at `@asof` versus as restated (and
    `6a_by_symbol`), `6b` the trades that changed, `6c` PnL forensics between `@t1` and
    `@t2` whose five columns add up to the total (and `6c_by_symbol`), `6d` booking latency
-   by channel (and `6d_by_symbol`). The as-known and as-restated views differ by one line,
+   by channel (and `6d_by_symbol`). `6e_margin_by_ccp` gross and net notional per book
+   and clearing house (ICE Clear Europe, ECC, CME; voice deals as `BILATERAL`). The as-known and as-restated views differ by one line,
    `WHERE booked_ts <= @asof`. Late voice bookings are normal desk life (broker median 20
    minutes, bilateral two hours), so `6b` lists the three planted cases alongside every
    ordinary voice deal done before `@asof` and booked after it.
@@ -330,8 +402,10 @@ drill-down sibling right below them.
    after); `7a_by_tenor` the same by relative tenor (the error sits on M1 to M4, the
    winter months, and fades along them); `7a_by_symbol` per contract. `7b` hourly drift.
    `7c` calendar-arbitrage violations on the vol surface as published and
-   `7c_as_corrected` on the latest version. `7d` how much of the grading had a fresh quote,
-   minute by minute and contract by contract around the ICE Endex outage.
+   `7c_as_corrected` on the latest version. `7d` the EEX outage minute by minute on the
+   dual-listed front months: primary and EEX tick counts, the mark's source and venue,
+   and whether the model was graded. EEX goes to zero for three minutes; marks and
+   grading carry on from the primary.
 
 ### QuestDB notes from building this
 
@@ -343,8 +417,13 @@ drill-down sibling right below them.
   time filter on the left side inside the parentheses; a `WHERE` after the join runs
   after it and the join reads every quote in the table (2.4 s instead of 0.4 s here).
 - Series cells read the 1-minute bars (`quotes_1m`), not ticks: a day-long spread or a
-  model-grading pass over 180M quotes takes seconds on ticks and milliseconds on bars,
-  and the bar's last quote is the ASOF match with a one-minute tolerance.
+  model-grading pass over 250M quotes takes seconds on ticks and milliseconds on bars,
+  and the bar's last quote is the ASOF match with a one-minute tolerance. The bars are
+  built from primary-venue quotes only (a `WHERE source IN (...)` in the view), so a bar
+  is one venue's price, not a blend of two books with different spreads.
+- `HAVING` is not supported: filter an aggregating CTE in the outer `WHERE`.
+- `IN (SELECT ... FROM cte)` is rejected (the CTE is looked up as a table); filter
+  directly or join the CTE.
 - The first run of a cell after a load or a restart is slower (cold pages); the timings
   in the next section are warm.
 - `LATEST ON` applies a `WHERE` at the same level before picking the row; status filters
@@ -357,25 +436,30 @@ drill-down sibling right below them.
 
 ### Query timings on the scale 1 dataset
 
-Measured with `check.py` on a laptop (QuestDB 10.0.2, 4 October to the morning of 8
-October, about 195M quotes), warm:
+Measured with `check.py` on a laptop (QuestDB 10.0.2, 4 October to midday on 8
+October, about 258M quotes), warm:
 
 | Cell | ms | Cell | ms |
 |---|---|---|---|
-| `0a`, `0b`, `0c` | 4 to 20 | `5a_lng_arb_jkm_ttf` | 22 |
-| `1a_pnl_by_book`, `_by_symbol` | 245 | `5a_ticks_half_hour` (18k rows) | 108 |
-| `1b` (all three) | 275 to 305 | `5b_gasoil_crack_and_brent_wti` | 7 |
-| `1c_markouts_by_desk` | 700 | `5c_clean_spark_zscore` | 23 |
-| `1d_markouts_by_counterparty` | 16 | `5c_ticks_half_hour` (54k rows) | 255 |
-| `2a` to `2d` | 2 to 5 | `5d`, `5e` | 8 to 13 |
-| `3a` to `3e` | 2 to 40 | `6a` to `6d` and siblings | 2 to 69 |
-| `4a`, `4b`, `4c`, `4e` | 4 to 14 | `7a` and siblings, `7b` | 98 to 147 |
-| `4d_consistency_history` | 248 | `7c`, `7c_as_corrected`, `7d` | 18 to 34 |
+| `0a`, `0b`, `0c` | 3 to 17 | `5a_lng_arb_jkm_ttf` | 23 |
+| `0d_listing_lookup` | 1,120 | `5a_ticks_half_hour` (18k rows) | 112 |
+| `1a_pnl_by_book`, `_by_symbol` | 275 | `5b_gasoil_crack_and_brent_wti` | 5 |
+| `1b` (all three) | 320 to 335 | `5c_clean_spark_zscore` | 23 |
+| `1c_markouts_by_desk` | 1,370 | `5c_ticks_half_hour` (54k rows) | 270 |
+| `1e_markouts_by_venue` | 1,320 | `5d`, `5e` | 9 to 13 |
+| `1d_markouts_by_counterparty` | 15 | `5f_cross_venue_spread` (36k rows) | 128 |
+| `2a` to `2f` | 2 to 7 | `5f_divergence_episodes` | 83 |
+| `3a` to `3e` | 2 to 40 | `6a` to `6d` and siblings | 2 to 76 |
+| `4a`, `4b`, `4c`, `4e` | 3 to 14 | `6e_margin_by_ccp` | 273 |
+| `4d_consistency_history` | 250 | `7a` and siblings, `7b` | 97 to 141 |
+| | | `7c`, `7c_as_corrected`, `7d` | 19 to 40 |
 
-Everything is under a second warm. The first run after a load or a restart is a few
-seconds on the tick-level cells (`1c`, the two `_ticks_` cells, `1a`) while the quote
-pages come in, so run `check.py` once before the session. On the cluster expect the same
-shape with slower cold runs on a gp3 volume.
+Everything is under 1.5 seconds warm. The slowest are the two markout cells, which join
+every fill to its own venue's raw ticks at six horizons, and `0d`, which takes the latest
+quote per contract and venue over a whole day of ticks to answer one lookup. The first
+run after a load or a restart is slower on the tick-level cells while the quote pages
+come in (here `1c` took 8.4 s, `0d` 3.9 s, `1a` and `1e` about 1.6 s), so run `check.py` once before
+the session. On the cluster expect the same shape with slower cold runs on a gp3 volume.
 
 ## Simplifications to be upfront about
 
@@ -383,8 +467,10 @@ shape with slower cold runs on a gp3 volume.
   Brent-WTI, Asia premium, UKA discount) to the real ones on the day, but the paths are
   simulated and the market diffuses around the clock, so vol is annualised on calendar
   time (365 x 288 five-minute bars).
-- The feed outage takes down a whole venue's feed (ICE Endex: TTF and EUA) at once; a
-  real outage can be narrower or wider.
+- The feed outage takes down a whole venue's feed (EEX: TTF, EUA and UK power) at once;
+  a real outage can be narrower or wider.
+- Routing is a weighted draw, not a smart order router: no queue position, no fees, no
+  latency between venues.
 - The vol service publishes an arbitrage-free surface (total variance non-decreasing in
   expiry), as a production vol service does; real raw surfaces carry small violations
   from noise. The planted bad mark is the one that escaped.
