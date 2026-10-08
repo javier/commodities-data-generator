@@ -1000,6 +1000,20 @@ def ensure_tables_and_views(args, prefix: str):
             # read from ticks (5f, 7d). No exchange is primary for one curve and
             # secondary for another, which build_listings asserts.
             primaries = ", ".join(f"'{e}'" for e in sorted({v[0][0] for v in LISTINGS.values()} | {"FX_FEED"}))
+            # 10-second bars, same venues: what a live dashboard samples on its own
+            # interval (10 s and up), so a panel that ticks reads a few thousand
+            # bars instead of millions of quotes.
+            conn.execute(f"""
+            CREATE MATERIALIZED VIEW IF NOT EXISTS {t("quotes_10s")} AS (
+              SELECT ts, symbol, curve,
+                     last(mid(bid, ask)) AS close,
+                     last(bid)           AS last_bid,
+                     last(ask)           AS last_ask,
+                     count()             AS ticks
+              FROM {t("quotes")}
+              WHERE source IN ({primaries})
+              SAMPLE BY 10s
+            ) PARTITION BY DAY{ttl_h}""")
             conn.execute(f"""
             CREATE MATERIALIZED VIEW IF NOT EXISTS {t("quotes_1m")} AS (
               SELECT ts, symbol, curve,
@@ -1039,7 +1053,8 @@ def ensure_tables_and_views(args, prefix: str):
               FROM {t("quotes_5m")}
               SAMPLE BY 1d
             ) PARTITION BY MONTH{ttl_m}""")
-            print(f"[DDL] Materialized views ready: {t('quotes_1m')}, {t('quotes_5m')}, {t('quotes_1d')}", flush=True)
+            print(f"[DDL] Materialized views ready: {t('quotes_10s')}, {t('quotes_1m')}, {t('quotes_5m')}, "
+                  f"{t('quotes_1d')}", flush=True)
         if args.create_views and has("curve_marks"):
             # Hourly curve history for curve-evolution charts.
             conn.execute(f"""
@@ -1117,6 +1132,32 @@ def ensure_tables_and_views(args, prefix: str):
                 WHERE ts <= @asof AND ts > dateadd('d', -1, @asof::timestamp)
                 LATEST ON ts PARTITION BY symbol""")
                 view("curve_marks_latest", f"SELECT * FROM {t('marks_asof')}")
+            if has("curve_marks", "quotes"):
+                # What a trader's screen shows: the latest mid on each instrument's
+                # primary listing in the five minutes up to @asof (source QUOTE,
+                # venue the exchange), falling back to the marks_asof row where
+                # there is no fresh quote (illiquid tenor, outage). Same columns as
+                # marks_asof plus age_s, the seconds between the price and @asof.
+                # The official valuation stays on marks_asof: a controller signs
+                # off the curve builder's marks, not the last tick.
+                primary_sources = ", ".join(f"'{e}'" for e in sorted({v[0][0] for v in LISTINGS.values()}))
+                view("marks_live", f"""
+                DECLARE OVERRIDABLE @asof := now()
+                WITH q AS (
+                  SELECT symbol, mid(bid, ask) AS price, source, ts FROM {t("quotes")}
+                  WHERE source IN ({primary_sources}) AND ts <= @asof AND ts > dateadd('m', -5, @asof::timestamp)
+                  LATEST ON ts PARTITION BY symbol
+                )
+                SELECT m.symbol, m.curve,
+                       CASE WHEN q.symbol IS NULL THEN m.price ELSE q.price END AS price,
+                       CASE WHEN q.symbol IS NULL THEN m.version ELSE NULL END AS version,
+                       CASE WHEN q.symbol IS NULL THEN m.source ELSE 'QUOTE' END AS source,
+                       CASE WHEN q.symbol IS NULL THEN m.venue ELSE q.source END AS venue,
+                       CASE WHEN q.symbol IS NULL THEN m.ts ELSE q.ts::timestamp END AS ts,
+                       datediff('s', CASE WHEN q.symbol IS NULL THEN m.ts ELSE q.ts::timestamp END,
+                                @asof::timestamp) AS age_s
+                FROM {t("marks_asof")} m
+                LEFT JOIN q ON q.symbol = m.symbol""")
             if has("quotes"):
                 # Latest FX mid per pair in the hour up to @asof (FX ticks several
                 # times a second). Naming the pairs lets LATEST ON stop at each

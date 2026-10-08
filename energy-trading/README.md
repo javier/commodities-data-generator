@@ -93,7 +93,7 @@ workers mostly buys O3 merge work, not speed.
 Volumes at `--scale_factor 1` for 4 October 00:00 to 8 October 12:00 UTC (a Sunday,
 three full weekdays and a morning): quotes 255M (27M of them on EEX), curve_marks 1.6M,
 model_prices 930k, iv_marks 233k, fills 19k, trade_events 21k, settlements 729,
-position_snapshots 729, plus the materialized views (quotes_1m 1.15M, quotes_5m 297k). A
+position_snapshots 729, plus the materialized views (quotes_10s 4.1M, quotes_1m 1.15M, quotes_5m 297k). A
 full weekday is about 71M quotes, 7.5M of them on EEX (low thousands of ticks a second
 in European hours, 10% at night); the load took about two minutes on a laptop with three
 workers. Fill counts scale with the same factor. The
@@ -372,6 +372,7 @@ variables `OVERRIDABLE`:
 | View | Parameter, default | Returns |
 |---|---|---|
 | `energy_marks_asof` | `@asof`, `now()` | latest mark per contract in the day up to `@asof`: `price, version, source, venue, ts` |
+| `energy_marks_live` | `@asof`, `now()` | the same columns plus `age_s`: the latest mid on the primary listing in the five minutes up to `@asof` (source `QUOTE`), or the `marks_asof` row where there is no fresh quote |
 | `energy_fx_asof` | `@asof`, `now()` | latest `usd` mid per FX pair in the hour up to `@asof` |
 | `energy_usd_factor_asof` | `@asof`, `now()` | per contract, `px_factor` times its currency's USD rate: what one unit of price is worth in USD |
 | `energy_tenors_asof` | `@asof`, `now()` | relative tenor of every contract unexpired at `@asof`, with the primary exchange symbol |
@@ -381,6 +382,11 @@ variables `OVERRIDABLE`:
 | `energy_positions_running_day` | `@day`, today's 00:00 | running position and cash per book and contract over the day's fills, and the running position per venue |
 | `energy_model_graded_day` | `@day`, today's 00:00 | every model price of the day against the last quote of the preceding minute: `err_bps`, season, tenor |
 | `energy_strip_gaps_day` | `@day`, today's 00:00 | per minute and strip, as published: strip mark, the weighted average of its months, the gap |
+
+The query pack values at `marks_asof`, the minute marks the curve builder publishes, since
+official marks are what a controller signs off. The dashboard's live panels price at
+`marks_live`, which follows the market between minute marks; at the same instant the two
+agree within one quoted spread on the liquid front months.
 
 Without parameters: `energy_ledger` (opening book as a pseudo-fill plus today's fills),
 `energy_tenors` and `energy_curve_marks_latest` and `energy_trade_events_latest` (the

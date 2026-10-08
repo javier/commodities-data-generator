@@ -261,17 +261,18 @@
       "id": 1,
       "type": "timeseries",
       "title": "Intraday trading PnL by book, USD, with drawdown",
-      "description": "Today's trading PnL per book on a 5-minute grid up to the right edge of the time range (running position and cash from positions_running_day, marks from the 5-minute bars, USD from usd_factor_asof), and the drawdown of the selected books' total. Same numbers as 1b_twin_window_function. Times are UTC.",
+      "description": "Today's trading PnL per book on the panel interval (10 s and up) to the right edge of the time range: running position and cash from positions_running_day, the mark of each bucket from the 10-second bars of the primary listing (quotes_10s), USD from usd_factor_asof; and the drawdown of the selected books' total over the range. Times are UTC.",
       "datasource": {
         "type": "questdb-questdb-datasource",
         "uid": "${DS_QUESTDB}"
       },
       "gridPos": {
-        "h": 9,
-        "w": 24,
+        "h": 11,
+        "w": 15,
         "x": 0,
         "y": 0
       },
+      "interval": "10s",
       "targets": [
         {
           "refId": "A",
@@ -279,7 +280,7 @@
             "type": "questdb-questdb-datasource",
             "uid": "${DS_QUESTDB}"
           },
-          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp)\nWITH grid AS (\n  SELECT ts, book, symbol, last(pos) AS pos, last(cost) AS cost\n  FROM ${prefix}positions_running_day\n  WHERE ts <= @asof AND book IN (${book:singlequote})\n  SAMPLE BY 5m FILL(PREV)\n),\nmk AS (\n  SELECT ts, symbol, last(close) AS mark\n  FROM ${prefix}quotes_5m\n  WHERE ts >= @day AND ts <= @asof\n  SAMPLE BY 5m FILL(PREV)\n),\npnl AS (\n  SELECT g.ts, g.book, sum((g.pos * m.mark - g.cost) * u.factor) AS pnl_usd\n  FROM grid g\n  JOIN mk m ON (ts, symbol)\n  JOIN ${prefix}usd_factor_asof u ON (symbol)\n  GROUP BY g.ts, g.book\n),\ntot AS (\n  SELECT ts, sum(pnl_usd) AS total FROM pnl GROUP BY ts ORDER BY ts\n),\ndd AS (\n  SELECT ts, total - max(total) OVER (ORDER BY ts) AS drawdown FROM tot\n)\nSELECT ts, book, pnl_usd FROM pnl WHERE $__timeFilter(ts)\nUNION ALL\nSELECT ts, 'Drawdown, selected books' AS book, drawdown AS pnl_usd FROM dd WHERE $__timeFilter(ts)\nORDER BY ts, book",
+          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp)\nWITH grid AS (\n  SELECT ts, book, symbol, last(pos) AS pos, last(cost) AS cost\n  FROM ${prefix}positions_running_day\n  WHERE ts <= @asof AND book IN (${book:singlequote})\n  SAMPLE BY $__sampleByInterval FILL(PREV)\n),\nmk AS (\n  SELECT ts, symbol, last(close) AS mark\n  FROM ${prefix}quotes_10s\n  WHERE $__timeFilter(ts) AND ts <= @asof\n    AND symbol IN (SELECT DISTINCT symbol FROM ${prefix}fills\n                   WHERE ts >= @day AND ts <= @asof AND book IN (${book:singlequote}))\n  SAMPLE BY $__sampleByInterval FILL(PREV)\n),\npnl AS (\n  SELECT g.ts, g.book, sum((g.pos * coalesce(m.mark, ml.price) - g.cost) * u.factor) AS pnl_usd\n  FROM grid g\n  LEFT JOIN mk m ON (ts, symbol)\n  JOIN ${prefix}marks_live ml ON (symbol)\n  JOIN ${prefix}usd_factor_asof u ON (symbol)\n  GROUP BY g.ts, g.book\n),\nr AS (\n  SELECT ts, book, pnl_usd FROM pnl WHERE $__timeFilter(ts)\n),\ntot AS (\n  SELECT ts, sum(pnl_usd) AS total FROM r GROUP BY ts ORDER BY ts\n),\ndd AS (\n  SELECT ts, total - max(total) OVER (ORDER BY ts) AS drawdown FROM tot\n)\nSELECT ts, book, pnl_usd FROM r\nUNION ALL\nSELECT ts, 'Drawdown, selected books' AS book, drawdown AS pnl_usd FROM dd\nORDER BY ts, book",
           "format": 1,
           "queryType": "sql",
           "editorMode": "code",
@@ -370,6 +371,352 @@
       }
     },
     {
+      "id": 8,
+      "type": "table",
+      "title": "Front months, live",
+      "description": "The front month of every curve on its primary listing: the latest quote in the ten minutes up to the right edge of the range, the change since the last settlement in the price unit and in percent, and the seconds since that quote. Primary listings only, so the planted EEX feed outage does not show here: the primary keeps ticking.",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 9,
+        "x": 15,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp)\nWITH f AS (\n  SELECT symbol, exchange_symbol, curve FROM ${prefix}tenors_asof WHERE tenor IN ('M1', 'Z1')\n),\nq AS (\n  SELECT symbol, source, bid, ask, ts FROM ${prefix}quotes\n  WHERE ts <= @asof AND ts > dateadd('m', -10, @asof::timestamp)\n  LATEST ON ts PARTITION BY symbol, source\n),\np AS (\n  SELECT q.symbol, q.bid, q.ask, q.ts\n  FROM q JOIN ${prefix}listings l ON l.symbol = q.symbol AND l.exchange = q.source AND l.is_primary\n),\nst AS (\n  SELECT symbol, price FROM ${prefix}settlements\n  WHERE ts < @day AND ts >= dateadd('d', -7, @day)\n  LATEST ON ts PARTITION BY symbol\n)\nSELECT f.symbol, f.exchange_symbol, p.bid, p.ask, mid(p.bid, p.ask) AS mid,\n       mid(p.bid, p.ask) - st.price                    AS change,\n       100 * (mid(p.bid, p.ask) - st.price) / st.price AS change_pct,\n       datediff('T', p.ts::timestamp, @asof::timestamp) / 1000.0 AS age_s\nFROM f\nJOIN p ON (symbol)\nLEFT JOIN st ON (symbol)\nORDER BY f.curve",
+          "format": 1,
+          "queryType": "sql",
+          "editorMode": "code",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "decimals": 3
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "symbol"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Symbol"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "exchange_symbol"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Exchange"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "bid"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Bid"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ask"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Ask"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mid"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Mid"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 122
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "exchange_symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 124
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "bid"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 74
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ask"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 74
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mid"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 74
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "change"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 64
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "change_pct"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 58
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "age_s"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 52
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "change"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Chg"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "change_pct"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Chg %"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "age_s"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Age s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 30
+                    },
+                    {
+                      "color": "red",
+                      "value": 120
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ]
+        }
+      }
+    },
+    {
       "type": "row",
       "title": "Positions and limits",
       "collapsed": false,
@@ -379,14 +726,14 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 9
+        "y": 11
       }
     },
     {
       "id": 2,
       "type": "table",
       "title": "PnL and position blotter, as of the end of the range",
-      "description": "Per book and contract: net position, the latest mark at the right edge of the range, the opening book revalued from settlement, today's trading and the total, in USD. Reads ledger, marks_asof and usd_factor_asof. Book totals equal 1a_pnl_by_book at the same instant.",
+      "description": "Per book and contract: net position, the live mark at the right edge of the range (the latest primary-listing mid from marks_live, or the curve builder's mark where there is no fresh quote), the opening book revalued from settlement, today's trading and the total, in USD. Reads ledger, marks_live and usd_factor_asof. 1a_pnl_by_book values the same book at the official minute marks (marks_asof).",
       "datasource": {
         "type": "questdb-questdb-datasource",
         "uid": "${DS_QUESTDB}"
@@ -395,7 +742,7 @@
         "h": 10,
         "w": 16,
         "x": 0,
-        "y": 10
+        "y": 12
       },
       "targets": [
         {
@@ -404,7 +751,7 @@
             "type": "questdb-questdb-datasource",
             "uid": "${DS_QUESTDB}"
           },
-          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp)\nSELECT l.book, l.symbol, li.exchange_symbol,\n       sum(l.qty)                                                                          AS position,\n       last(m.price)                                                                       AS mark,\n       sum(CASE WHEN l.src = 'sod'   THEN l.qty * (m.price - l.px) * u.factor ELSE 0 END) AS sod_revalued_usd,\n       sum(CASE WHEN l.src = 'trade' THEN l.qty * (m.price - l.px) * u.factor ELSE 0 END) AS todays_trading_usd,\n       sum(l.qty * (m.price - l.px) * u.factor)                                            AS total_pnl_usd\nFROM ${prefix}ledger l\nJOIN ${prefix}marks_asof m ON (symbol)\nJOIN ${prefix}usd_factor_asof u ON (symbol)\nJOIN (SELECT symbol, exchange_symbol FROM ${prefix}listings WHERE is_primary) li ON (symbol)\nWHERE l.ts >= @day AND l.ts <= @asof AND l.book IN (${book:singlequote})\nGROUP BY l.book, l.symbol, li.exchange_symbol\nORDER BY l.book, l.symbol",
+          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp)\nSELECT l.book, l.symbol, li.exchange_symbol,\n       sum(l.qty)                                                                          AS position,\n       last(m.price)                                                                       AS mark,\n       sum(CASE WHEN l.src = 'sod'   THEN l.qty * (m.price - l.px) * u.factor ELSE 0 END) AS sod_revalued_usd,\n       sum(CASE WHEN l.src = 'trade' THEN l.qty * (m.price - l.px) * u.factor ELSE 0 END) AS todays_trading_usd,\n       sum(l.qty * (m.price - l.px) * u.factor)                                            AS total_pnl_usd\nFROM ${prefix}ledger l\nJOIN ${prefix}marks_live m ON (symbol)\nJOIN ${prefix}usd_factor_asof u ON (symbol)\nJOIN (SELECT symbol, exchange_symbol FROM ${prefix}listings WHERE is_primary) li ON (symbol)\nWHERE l.ts >= @day AND l.ts <= @asof AND l.book IN (${book:singlequote})\nGROUP BY l.book, l.symbol, li.exchange_symbol\nORDER BY l.book, l.symbol",
           "format": 1,
           "queryType": "sql",
           "editorMode": "code",
@@ -731,7 +1078,7 @@
         "h": 10,
         "w": 8,
         "x": 16,
-        "y": 10
+        "y": 12
       },
       "targets": [
         {
@@ -929,14 +1276,14 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 20
+        "y": 22
       }
     },
     {
       "id": 4,
       "type": "status-history",
-      "title": "Curve evolution, ${curve}: change since last settlement, %",
-      "description": "Every tenor of the selected curve, front to back (months, then quarters, seasons and cals), in 5-minute buckets across the range: the curve builder's mark against the last settlement, in percent so one colour scale serves every curve. Tenors as of the right edge (tenors_asof).",
+      "title": "Curve evolution, ${curve}: change since the start of the range, %",
+      "description": "Every tenor of the selected curve, front to back (months, then quarters, seasons and cals), on the panel interval (10 s and up): the last primary-listing mid of each bucket (quotes_10s) against the curve builder's mark at the start of the range, in percent. Grey is within 0.25% (0.125% for oil curves); the settlement comparison is the panel to the right.",
       "datasource": {
         "type": "questdb-questdb-datasource",
         "uid": "${DS_QUESTDB}"
@@ -945,8 +1292,10 @@
         "h": 15,
         "w": 12,
         "x": 0,
-        "y": 21
+        "y": 23
       },
+      "interval": "10s",
+      "maxDataPoints": 200,
       "targets": [
         {
           "refId": "A",
@@ -954,7 +1303,19 @@
             "type": "questdb-questdb-datasource",
             "uid": "${DS_QUESTDB}"
           },
-          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp)\nWITH g AS (\n  SELECT symbol, tenor, tenor_n,\n         CASE WHEN granularity IN ('M', 'Z') THEN 1 WHEN granularity = 'Q' THEN 2\n              WHEN granularity = 'S' THEN 3 ELSE 4 END AS g_order\n  FROM ${prefix}tenors_asof\n  WHERE curve = '${curve}'\n    AND ((granularity IN ('M', 'Z') AND tenor_n <= 24) OR (granularity = 'Q' AND tenor_n <= 8)\n         OR (granularity = 'S' AND tenor_n <= 4) OR (granularity = 'Y' AND tenor_n <= 3))\n),\nt AS (\n  SELECT symbol, tenor, row_number() OVER (ORDER BY g_order, tenor_n) AS rk FROM g\n),\nst AS (\n  SELECT symbol, price AS settle FROM ${prefix}settlements\n  WHERE curve = '${curve}' AND ts < @day AND ts >= dateadd('d', -7, @day)\n  LATEST ON ts PARTITION BY symbol\n),\nmk AS (\n  SELECT ts, symbol, last(price) AS price\n  FROM ${prefix}curve_marks\n  WHERE curve = '${curve}' AND $__timeFilter(ts) AND ts <= @asof\n  SAMPLE BY 5m\n)\nSELECT mk.ts, lpad(t.rk::string, 2, '0') || ' ' || t.tenor AS tenor,\n       100 * (mk.price - st.settle) / st.settle AS change_pct\nFROM mk\nJOIN t ON (symbol)\nJOIN st ON (symbol)\nORDER BY mk.ts, t.rk",
+          "rawSql": "DECLARE @asof := '${__to:date:iso}', @from := '${__from:date:iso}'\nWITH g AS (\n  SELECT symbol, tenor, tenor_n,\n         CASE WHEN granularity IN ('M', 'Z') THEN 1 WHEN granularity = 'Q' THEN 2\n              WHEN granularity = 'S' THEN 3 ELSE 4 END AS g_order\n  FROM ${prefix}tenors_asof\n  WHERE curve = '${curve}'\n    AND ((granularity IN ('M', 'Z') AND tenor_n <= 24) OR (granularity = 'Q' AND tenor_n <= 8)\n         OR (granularity = 'S' AND tenor_n <= 4) OR (granularity = 'Y' AND tenor_n <= 3))\n),\nt AS (\n  SELECT symbol, tenor, row_number() OVER (ORDER BY g_order, tenor_n) AS rk FROM g\n),\nbase AS (\n  SELECT symbol, price FROM ${prefix}curve_marks\n  WHERE curve = '${curve}' AND ts <= @from AND ts > dateadd('d', -1, @from::timestamp)\n  LATEST ON ts PARTITION BY symbol\n),\nmk AS (\n  SELECT ts, symbol, last(close) AS price\n  FROM ${prefix}quotes_10s\n  WHERE curve = '${curve}' AND $__timeFilter(ts) AND ts <= @asof\n  SAMPLE BY $__sampleByInterval FILL(PREV)\n)\nSELECT mk.ts, lpad(t.rk::string, 2, '0') || ' ' || t.tenor AS tenor,\n       100 * (coalesce(mk.price, b.price) - b.price) / b.price AS change_pct\nFROM mk\nJOIN t ON (symbol)\nJOIN base b ON (symbol)\nWHERE '${curve}' NOT IN ('BRENT', 'WTI', 'GASOIL')\nORDER BY mk.ts, t.rk",
+          "format": 1,
+          "queryType": "sql",
+          "editorMode": "code",
+          "rawQuery": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "rawSql": "DECLARE @asof := '${__to:date:iso}', @from := '${__from:date:iso}'\nWITH g AS (\n  SELECT symbol, tenor, tenor_n,\n         CASE WHEN granularity IN ('M', 'Z') THEN 1 WHEN granularity = 'Q' THEN 2\n              WHEN granularity = 'S' THEN 3 ELSE 4 END AS g_order\n  FROM ${prefix}tenors_asof\n  WHERE curve = '${curve}'\n    AND ((granularity IN ('M', 'Z') AND tenor_n <= 24) OR (granularity = 'Q' AND tenor_n <= 8)\n         OR (granularity = 'S' AND tenor_n <= 4) OR (granularity = 'Y' AND tenor_n <= 3))\n),\nt AS (\n  SELECT symbol, tenor, row_number() OVER (ORDER BY g_order, tenor_n) AS rk FROM g\n),\nbase AS (\n  SELECT symbol, price FROM ${prefix}curve_marks\n  WHERE curve = '${curve}' AND ts <= @from AND ts > dateadd('d', -1, @from::timestamp)\n  LATEST ON ts PARTITION BY symbol\n),\nmk AS (\n  SELECT ts, symbol, last(close) AS price\n  FROM ${prefix}quotes_10s\n  WHERE curve = '${curve}' AND $__timeFilter(ts) AND ts <= @asof\n  SAMPLE BY $__sampleByInterval FILL(PREV)\n)\nSELECT mk.ts, lpad(t.rk::string, 2, '0') || ' ' || t.tenor AS tenor,\n       100 * (coalesce(mk.price, b.price) - b.price) / b.price AS change_pct\nFROM mk\nJOIN t ON (symbol)\nJOIN base b ON (symbol)\nWHERE '${curve}' IN ('BRENT', 'WTI', 'GASOIL')\nORDER BY mk.ts, t.rk",
           "format": 1,
           "queryType": "sql",
           "editorMode": "code",
@@ -991,28 +1352,36 @@
                 "value": null
               },
               {
-                "color": "#F2495C",
-                "value": -3
+                "color": "#E02F44",
+                "value": -2.0
               },
               {
-                "color": "#FFA6B0",
-                "value": -1
+                "color": "#FF7383",
+                "value": -1.0
+              },
+              {
+                "color": "#FFB3BC",
+                "value": -0.5
               },
               {
                 "color": "#4D4D4D",
                 "value": -0.25
               },
               {
-                "color": "#96D98D",
+                "color": "#B5E5AE",
                 "value": 0.25
               },
               {
-                "color": "#56A64B",
-                "value": 1
+                "color": "#73BF69",
+                "value": 0.5
+              },
+              {
+                "color": "#37872D",
+                "value": 1.0
               },
               {
                 "color": "#19730E",
-                "value": 3
+                "value": 2.0
               }
             ]
           },
@@ -1021,7 +1390,60 @@
             "lineWidth": 0
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#C4162A",
+                      "value": null
+                    },
+                    {
+                      "color": "#E02F44",
+                      "value": -1.0
+                    },
+                    {
+                      "color": "#FF7383",
+                      "value": -0.5
+                    },
+                    {
+                      "color": "#FFB3BC",
+                      "value": -0.25
+                    },
+                    {
+                      "color": "#4D4D4D",
+                      "value": -0.125
+                    },
+                    {
+                      "color": "#B5E5AE",
+                      "value": 0.125
+                    },
+                    {
+                      "color": "#73BF69",
+                      "value": 0.25
+                    },
+                    {
+                      "color": "#37872D",
+                      "value": 0.5
+                    },
+                    {
+                      "color": "#19730E",
+                      "value": 1.0
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "showValue": "never",
@@ -1041,7 +1463,7 @@
       "id": 5,
       "type": "trend",
       "title": "Live curve versus last settlement, ${curve} (${curve_unit})",
-      "description": "The month curve by delivery month: the mark at the right edge of the range (marks_asof) and the last official settlement before that day. The X axis is the delivery calendar, not time.",
+      "description": "The month curve by delivery month: the live mark at the right edge of the range (marks_live: the latest primary-listing mid, or the curve builder's mark where there is no fresh quote) and the last official settlement before that day. The X axis is the delivery calendar.",
       "datasource": {
         "type": "questdb-questdb-datasource",
         "uid": "${DS_QUESTDB}"
@@ -1050,7 +1472,7 @@
         "h": 15,
         "w": 12,
         "x": 12,
-        "y": 21
+        "y": 23
       },
       "targets": [
         {
@@ -1059,7 +1481,7 @@
             "type": "questdb-questdb-datasource",
             "uid": "${DS_QUESTDB}"
           },
-          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp)\nSELECT t.delivery_start::long / 1000 AS delivery, t.tenor,\n       m.price AS mark_asof, s.price AS last_settlement\nFROM ${prefix}marks_asof m\nJOIN ${prefix}tenors_asof t ON (symbol)\nLEFT JOIN (SELECT symbol, price FROM ${prefix}settlements\n           WHERE curve = '${curve}' AND ts < @day AND ts >= dateadd('d', -7, @day)\n           LATEST ON ts PARTITION BY symbol) s ON (symbol)\nWHERE m.curve = '${curve}' AND t.granularity IN ('M', 'Z')\nORDER BY t.delivery_start",
+          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp)\nSELECT t.delivery_start::long / 1000 AS delivery, t.tenor,\n       m.price AS mark_asof, s.price AS last_settlement\nFROM ${prefix}marks_live m\nJOIN ${prefix}tenors_asof t ON (symbol)\nLEFT JOIN (SELECT symbol, price FROM ${prefix}settlements\n           WHERE curve = '${curve}' AND ts < @day AND ts >= dateadd('d', -7, @day)\n           LATEST ON ts PARTITION BY symbol) s ON (symbol)\nWHERE m.curve = '${curve}' AND t.granularity IN ('M', 'Z')\nORDER BY t.delivery_start",
           "format": 1,
           "queryType": "sql",
           "editorMode": "code",
@@ -1159,7 +1581,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 36
+        "y": 38
       }
     },
     {
@@ -1175,7 +1597,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 37
+        "y": 39
       },
       "targets": [
         {
@@ -1285,7 +1707,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 37
+        "y": 39
       },
       "targets": [
         {

@@ -10,10 +10,10 @@
 #   energy_instruments, energy_listings, energy_limits, energy_quotes, energy_curve_marks,
 #   energy_settlements, energy_iv_marks, energy_model_prices, energy_da_prices,
 #   energy_fills, energy_trade_events, energy_position_snapshots, energy_demo_events
-#   energy_quotes_1m / _5m / _1d, energy_curve_marks_1h        (materialized views)
+#   energy_quotes_10s / _1m / _5m / _1d, energy_curve_marks_1h  (materialized views)
 #   energy_positions_live, energy_positions_live_by_venue      (live views, beta)
 #   energy_ledger, energy_curve_marks_latest, energy_trade_events_latest,
-#   energy_tenors, energy_instrument_master, energy_marks_asof, energy_fx_asof,
+#   energy_tenors, energy_instrument_master, energy_marks_asof, energy_marks_live, energy_fx_asof,
 #   energy_usd_factor_asof, energy_tenors_asof, energy_book_asof,
 #   energy_book_restated, energy_mid_1m_day, energy_positions_running_day,
 #   energy_model_graded_day, energy_strip_gaps_day              (views)
