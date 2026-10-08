@@ -288,7 +288,14 @@ Chart cells return `ts` first and numeric columns after, so they drop into Grafa
   model-grading pass over 180M quotes takes seconds on ticks and milliseconds on bars,
   and the bar's last quote is the ASOF match with a one-minute tolerance.
 - The first run of a cell after a load or a restart is slower (cold pages); the timings
-  below are warm.
+  in the next section are warm.
+- `LATEST ON` applies a `WHERE` at the same level before picking the row; status filters
+  go in an outer query, or a cancelled trade's earlier NEW row comes back.
+- `PIVOT` after a `WITH` only works as `SELECT * FROM cte PIVOT (...)`.
+- `::decimal(p,s)` truncates, so `round()` first.
+- TTL must be an integer multiple of the partition unit and sits before `WAL`.
+- The Python client sends UUID columns from strings, drops nothing silently except that a
+  symbol column that is entirely null must be dropped from the frame before sending.
 
 ### Query timings on the scale 1 dataset
 
@@ -309,13 +316,6 @@ Measured with `check.py` on a laptop (QuestDB 10.0.2, 182M quotes, four days), w
 Everything is under half a second warm; the first run after a load is a few seconds on
 the tick-level cells (`1c`, the two `_ticks_` cells) while the quote pages come in. On
 the cluster expect the same shape with slower cold runs on a gp3 volume.
-- `LATEST ON` applies a `WHERE` at the same level before picking the row; status filters
-  go in an outer query, or a cancelled trade's earlier NEW row comes back.
-- `PIVOT` after a `WITH` only works as `SELECT * FROM cte PIVOT (...)`.
-- `::decimal(p,s)` truncates, so `round()` first.
-- TTL must be an integer multiple of the partition unit and sits before `WAL`.
-- The Python client sends UUID columns from strings, drops nothing silently except that a
-  symbol column that is entirely null must be dropped from the frame before sending.
 
 ## Simplifications to be upfront about
 

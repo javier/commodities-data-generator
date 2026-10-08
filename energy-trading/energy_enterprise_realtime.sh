@@ -19,7 +19,7 @@
 #
 # Tables must already exist (run the backfill first); the DDL is idempotent and
 # re-running it is harmless. Keep it under a process supervisor (systemd,
-# screen, tmux) if it needs to outlive your shell. Ctrl-C saves the state file.
+# screen, tmux) if it needs to outlive your terminal. Ctrl-C saves the state file.
 set -euo pipefail
 
 cd "$(dirname "$0")"
