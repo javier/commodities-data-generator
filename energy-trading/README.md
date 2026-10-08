@@ -571,12 +571,15 @@ slower cold runs on a gp3 volume.
 
 ## Dashboard
 
-`grafana/energy_desk_dashboard.json` is one Grafana dashboard on the same views: intraday
-PnL with drawdown, the blotter and limit utilisation, the curve's evolution and its shape
-against settlement, the book as known versus as restated, and a PnL explain. Every panel
-is as of the right edge of the time range, so the same dashboard is the live desk at
-"Last 6 hours" and the reconstruction when the range ends in the past. Import steps, the
-plugin macros and the two demo moves are in `grafana/README.md`.
+[`grafana/energy_desk_dashboard.json`](grafana/energy_desk_dashboard.json) is one Grafana
+dashboard on the same views: intraday PnL with drawdown, the blotter and limit
+utilisation, the curve's evolution and its shape against settlement, the book as known
+versus as restated, and a PnL explain. Every panel is as of the right edge of the time
+range, so the same dashboard is the live desk at "Last 6 hours" and the reconstruction
+when the range ends in the past. Import steps, the plugin macros and the two demo moves
+are in the [dashboard README](grafana/README.md).
+
+![Energy Trading Desk dashboard](grafana/screenshot.png)
 
 ## Simplifications to be upfront about
 
