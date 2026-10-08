@@ -25,6 +25,7 @@ act something to find. Everything is generic: no real desk, no real names.
 | `energy_backfill.sh`, `energy_realtime.sh` | Local runners (QuestDB OSS on `127.0.0.1:9000`) |
 | `energy_enterprise_backfill.sh`, `energy_enterprise_realtime.sh` | Cluster runners (QWP over TLS, token auth, VPC-internal endpoints) |
 | `requirements.txt` | `questdb[dataframe]>=5.0`, numpy, pandas, yfinance |
+| `grafana/` | The Energy Trading Desk dashboard for the live session, its README and a screenshot |
 
 Tested end to end on QuestDB 10.0.1 (the `questdb/questdb:10.0.1` image) and on a
 10.0.2 snapshot, both OSS, with Python 3.12. Transport is QWP
@@ -567,6 +568,15 @@ three pairs and stops at each one's last tick. The first run after a load or a r
 is slower on the tick-level cells while the quote pages come in (here `1c` took 8 to 10
 s), so run `check.py` once before the session. On the cluster expect the same shape with
 slower cold runs on a gp3 volume.
+
+## Dashboard
+
+`grafana/energy_desk_dashboard.json` is one Grafana dashboard on the same views: intraday
+PnL with drawdown, the blotter and limit utilisation, the curve's evolution and its shape
+against settlement, the book as known versus as restated, and a PnL explain. Every panel
+is as of the right edge of the time range, so the same dashboard is the live desk at
+"Last 6 hours" and the reconstruction when the range ends in the past. Import steps, the
+plugin macros and the two demo moves are in `grafana/README.md`.
 
 ## Simplifications to be upfront about
 
