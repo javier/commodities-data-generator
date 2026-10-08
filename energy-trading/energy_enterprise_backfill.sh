@@ -12,7 +12,12 @@
 #   energy_fills, energy_trade_events, energy_position_snapshots, energy_demo_events
 #   energy_quotes_1m / _5m / _1d, energy_curve_marks_1h        (materialized views)
 #   energy_positions_live                                       (live view, beta)
-#   energy_ledger, energy_curve_marks_latest, energy_trade_events_latest (views)
+#   energy_ledger, energy_curve_marks_latest, energy_trade_events_latest,
+#   energy_tenors                                               (views)
+#
+# If the cluster already holds an energy_instruments table from before the
+# symbology columns were added, drop it once (and energy_tenors with it): the
+# generator refuses to write into a table whose schema differs from its own.
 #
 # Every table is WAL with per-column Parquet encodings, so the cluster's storage
 # policy produces compact cold partitions. NOTE ON RETENTION: --short_ttl is

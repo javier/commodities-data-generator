@@ -101,42 +101,88 @@ GAS_EF = 0.2                # tCO2 per MWh of gas burned
 
 # curve: complex, unit, ccy, px_factor, fx_symbol, to_mwh, exchange, tz, n_months,
 #        strips, tick, front_tick_rate (quotes/s at full activity, rank 0),
-#        base_spread_ticks (front), quote_source_for_strips
+#        base_spread_ticks (front), max_spread_ticks, display precision,
+#        exchange product code.
+#
+# Venues and product codes are the exchanges' own, checked on their product
+# pages on 2026-10-08: ICE Futures Europe (MIC IFEU) for Brent BRN, Low
+# Sulphur Gasoil G, UK NBP gas GWM, JKM LNG (Platts) JKM, UK Base Electricity
+# (Gregorian) UBL and UKA futures UKA; ICE Endex (MIC NDEX) for Dutch TTF gas
+# TFM and EUA futures ECF; CME NYMEX for WTI CL.
 CURVES = {
     "BRENT":  dict(complex="OIL",    unit="bbl",   ccy="USD", px_factor=1.0,  fx=None,     to_mwh=None,
                    exchange="ICE", tz="UTC", n_months=24, strips=False, tick=0.01,
-                   front_rate=180.0, spread_ticks=1.0, precision=2),
+                   front_rate=180.0, spread_ticks=1.0, max_spread_ticks=12.0, precision=2,
+                   code="BRN"),
     "WTI":    dict(complex="OIL",    unit="bbl",   ccy="USD", px_factor=1.0,  fx=None,     to_mwh=None,
                    exchange="CME", tz="UTC", n_months=24, strips=False, tick=0.01,
-                   front_rate=150.0, spread_ticks=1.0, precision=2),
+                   front_rate=150.0, spread_ticks=1.0, max_spread_ticks=12.0, precision=2,
+                   code="CL"),
     "GASOIL": dict(complex="OIL",    unit="t",     ccy="USD", px_factor=1.0,  fx=None,     to_mwh=None,
                    exchange="ICE", tz="UTC", n_months=18, strips=False, tick=0.25,
-                   front_rate=40.0, spread_ticks=1.0, precision=2),
+                   front_rate=40.0, spread_ticks=1.0, max_spread_ticks=12.0, precision=2,
+                   code="G"),
     "TTF":    dict(complex="GAS",    unit="MWh",   ccy="EUR", px_factor=1.0,  fx="EURUSD", to_mwh=1.0,
-                   exchange="ICE", tz="Europe/Amsterdam", n_months=38, strips=True, tick=0.005,
-                   front_rate=120.0, spread_ticks=3.0, precision=3),
+                   exchange="ICE_ENDEX", tz="Europe/Amsterdam", n_months=38, strips=True, tick=0.005,
+                   front_rate=120.0, spread_ticks=3.0, max_spread_ticks=12.0, precision=3,
+                   code="TFM"),
     "NBP":    dict(complex="GAS",    unit="therm", ccy="GBP", px_factor=0.01, fx="GBPUSD", to_mwh=THERM_MWH,
                    exchange="ICE", tz="Europe/London", n_months=38, strips=True, tick=0.005,
-                   front_rate=50.0, spread_ticks=3.0, precision=3),
+                   front_rate=50.0, spread_ticks=3.0, max_spread_ticks=12.0, precision=3,
+                   code="GWM"),
+    # JKM ticks in tenths of a cent; the screen spread is a few cents wide.
     "JKM":    dict(complex="LNG",    unit="MMBtu", ccy="USD", px_factor=1.0,  fx=None,     to_mwh=1.0 / MMBTU_PER_MWH,
-                   exchange="ICE", tz="UTC", n_months=12, strips=False, tick=0.005,
-                   front_rate=10.0, spread_ticks=4.0, precision=3),
+                   exchange="ICE", tz="UTC", n_months=12, strips=False, tick=0.001,
+                   front_rate=10.0, spread_ticks=20.0, max_spread_ticks=60.0, precision=3,
+                   code="JKM"),
     "UKPWR":  dict(complex="POWER",  unit="MWh",   ccy="GBP", px_factor=1.0,  fx="GBPUSD", to_mwh=1.0,
-                   exchange="EEX", tz="Europe/London", n_months=38, strips=True, tick=0.01,
-                   front_rate=30.0, spread_ticks=3.0, precision=2),
+                   exchange="ICE", tz="Europe/London", n_months=38, strips=True, tick=0.01,
+                   front_rate=30.0, spread_ticks=3.0, max_spread_ticks=12.0, precision=2,
+                   code="UBL"),
     "EUA":    dict(complex="CARBON", unit="tCO2",  ccy="EUR", px_factor=1.0,  fx="EURUSD", to_mwh=None,
-                   exchange="ICE", tz="UTC", n_months=0, strips=False, tick=0.01,
-                   front_rate=60.0, spread_ticks=1.0, precision=2),
+                   exchange="ICE_ENDEX", tz="UTC", n_months=0, strips=False, tick=0.01,
+                   front_rate=60.0, spread_ticks=1.0, max_spread_ticks=12.0, precision=2,
+                   code="ECF"),
     "UKA":    dict(complex="CARBON", unit="tCO2",  ccy="GBP", px_factor=1.0,  fx="GBPUSD", to_mwh=None,
                    exchange="ICE", tz="UTC", n_months=0, strips=False, tick=0.01,
-                   front_rate=10.0, spread_ticks=2.0, precision=2),
+                   front_rate=10.0, spread_ticks=2.0, max_spread_ticks=12.0, precision=2,
+                   code="UKA"),
 }
 CARBON_YEARS = (2026, 2027, 2028)
 FX_PAIRS = ["EURUSD", "GBPUSD", "EURGBP"]
 FX_TICK_RATE = 8.0
 
-CCP = {"ICE": "ICE_CLEAR_EU", "EEX": "ECC", "CME": "CME_CLEARING"}
+# ICE Endex contracts clear at ICE Clear Europe, like ICE Futures Europe ones.
+CCP = {"ICE": "ICE_CLEAR_EU", "ICE_ENDEX": "ICE_CLEAR_EU", "CME": "CME_CLEARING"}
 STRIP_SOURCE = {"GAS": "BROKER_A", "POWER": "BROKER_B", "LNG": "BROKER_A"}
+# The planted feed outage (8.9) drops the whole ICE Endex quote feed: TTF and EUA.
+OUTAGE_EXCHANGE = "ICE_ENDEX"
+
+# Futures month codes, industry-wide.
+MONTH_CODE = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
+              7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"}
+TERM_CODE = {"M": "M", "Z": "M", "Q": "Q", "S": "S", "Y": "Y"}
+
+
+def exchange_symbol(curve: str, gran: str, ys: int, ms: int, ye: int, me: int) -> str:
+    """The contract's name in its exchange's own format.
+
+    ICE (Futures Europe and Endex): product code left-justified to four
+    characters, F for futures, the term letter, the month code, 00 for the whole
+    period, the two-digit year, and for seasons a '.' switch followed by the
+    last delivery month (ICE's own example: GWM FSV0007.H0008 is the winter
+    2007 NBP strip). CME: root, month code, two-digit year (CLF27).
+    """
+    c = CURVES[curve]
+    mc, yy = MONTH_CODE[ms], ys % 100
+    if c["exchange"] == "CME":
+        return f"{c['code']}{mc}{yy:02d}"
+    sym = f"{c['code']:<4}F{TERM_CODE[gran]}{mc}00{yy:02d}"
+    if gran == "S":
+        ly, lm = madd(ye, me, -1)
+        sym += f".{MONTH_CODE[lm]}00{ly % 100:02d}"
+    return sym
+
 
 # Seasonal shape by delivery month (index 0 = Jan). Oil and carbon are flat.
 GAS_SEASONAL = np.array([1.18, 1.14, 1.05, 0.96, 0.92, 0.90, 0.90, 0.92, 0.96, 1.04, 1.10, 1.16])
@@ -255,7 +301,6 @@ def last_bday_of_month(y: int, m: int) -> datetime.date:
 
 
 def last_monday_of_month(y: int, m: int) -> datetime.date:
-    d = last_bday_of_month(y, m)
     ny, nm = madd(y, m, 1)
     d = datetime.date(ny, nm, 1) - datetime.timedelta(days=1)
     while d.weekday() != 0:
@@ -275,17 +320,37 @@ def delivery_hours(y1, m1, y2, m2, tz) -> int:
 
 
 def expiry_for(curve: str, y: int, m: int) -> datetime.datetime:
-    """Simplified exchange expiry rules, 16:30 UTC on the expiry day. Brent
-    keeps its real rule (last business day of the second month before
-    delivery) so the front month matches the BZ=F anchor; WTI and gasoil use
-    the month-before-delivery simplification."""
+    """Last trading day per the exchange's rule (weekends only, no holiday
+    calendar), stamped 16:30 UTC.
+
+    Brent: last business day of the second month before delivery.
+    WTI: 3 business days before the 25th of the month before delivery (4 if
+    the 25th is not a business day). Gasoil: 2 business days before the 14th
+    of the delivery month, so the front month trades into its own month. JKM:
+    the 15th of the month before delivery, or the business day before it.
+    Gas and power months and strips: 2 business days before delivery.
+    Carbon December contracts: the last Monday of December, or the penultimate
+    one if that Monday is a UK bank holiday or one falls in the 4 days after
+    it; for December that is always the case (Christmas, Boxing Day or New
+    Year's Day is always within reach), so it is always the penultimate Monday.
+    """
     cx = CURVES[curve]["complex"]
     if curve == "BRENT":
         d = last_bday_of_month(*madd(y, m, -2))
-    elif cx == "OIL":
-        d = last_bday_of_month(*madd(y, m, -1))
+        if d.month == 12 and d.day >= 24:
+            # The business day before Christmas or New Year's Day rolls back one.
+            d = prev_bday(d - datetime.timedelta(days=1))
+    elif curve == "WTI":
+        py, pm = madd(y, m, -1)
+        d25 = datetime.date(py, pm, 25)
+        d = bdays_before(d25, 3 if d25.weekday() < 5 else 4)
+    elif curve == "GASOIL":
+        d = bdays_before(datetime.date(y, m, 14), 2)
+    elif curve == "JKM":
+        py, pm = madd(y, m, -1)
+        d = prev_bday(datetime.date(py, pm, 15))
     elif cx == "CARBON":
-        d = last_monday_of_month(y, 12)
+        d = last_monday_of_month(y, 12) - datetime.timedelta(days=7)
     else:
         d = bdays_before(datetime.date(y, m, 1), 2)
     return datetime.datetime(d.year, d.month, d.day, 16, 30, tzinfo=UTC)
@@ -325,9 +390,11 @@ def build_instruments(day0: datetime.datetime) -> pd.DataFrame:
         else:
             lot = 1000.0
         rows.append(dict(
-            symbol=f"{curve}_{label}", curve=curve, complex=cx, granularity=gran,
+            symbol=f"{curve}_{label}", exchange_symbol=exchange_symbol(curve, gran, ys, ms, ye, me),
+            curve=curve, complex=cx, granularity=gran,
             delivery_start=start.replace(tzinfo=None), delivery_end=end.replace(tzinfo=None),
             hours=hours, days=days, expiry=expiry.replace(tzinfo=None), exchange=c["exchange"],
+            exchange_code=c["code"], term_code=TERM_CODE[gran], month_code=MONTH_CODE[ms],
             unit=c["unit"], ccy=c["ccy"], px_factor=c["px_factor"], fx_symbol=c["fx"],
             to_mwh=c["to_mwh"], lot_size=lot, tick_size=c["tick"], moy=ms, months=months or [],
         ))
@@ -389,7 +456,7 @@ def build_instruments(day0: datetime.datetime) -> pd.DataFrame:
             rate[i] = {"Q": 0.15, "S": 0.10, "Y": 0.08}[r.granularity] * (0.8 ** k)
             spread[i] = c["spread_ticks"] + 3.0 + 0.8 * k
     df["tick_rate"] = rate
-    df["spread_ticks"] = np.minimum(spread, 12.0)
+    df["spread_ticks"] = np.minimum(spread, [CURVES[c]["max_spread_ticks"] for c in df.curve])
     df["source"] = [r.exchange if r.granularity in ("M", "Z") else STRIP_SOURCE[r.complex]
                     for r in df.itertuples()]
     return df.reset_index(drop=True)
@@ -582,11 +649,14 @@ def table_ddl(args, prefix: str) -> dict:
     ddl = {}
 
     # One row per tradable contract. Reference data: ts is the epoch, DEDUP
-    # turns a re-run into an upsert.
+    # turns a re-run into an upsert. Two names per contract: symbol is the
+    # desk's readable id, exchange_symbol the exchange's own contract name
+    # (ICE / CME format). ts (the epoch) is the last column so SELECT * does
+    # not lead with 1970.
     ddl["instruments"] = f"""
     CREATE TABLE IF NOT EXISTS {t("instruments")} (
-      ts             TIMESTAMP{TS},
       symbol         SYMBOL CAPACITY 2048{SYM},
+      exchange_symbol VARCHAR{DEF},
       curve          SYMBOL CAPACITY 32{SYML},
       complex        SYMBOL CAPACITY 8{SYML},
       granularity    SYMBOL CAPACITY 8{SYML},
@@ -596,13 +666,17 @@ def table_ddl(args, prefix: str) -> dict:
       days           INT{DEF},
       expiry         TIMESTAMP{TS},
       exchange       SYMBOL CAPACITY 8{SYML},
+      exchange_code  SYMBOL CAPACITY 16{SYML},
+      term_code      SYMBOL CAPACITY 8{SYML},
+      month_code     SYMBOL CAPACITY 16{SYML},
       unit           SYMBOL CAPACITY 8{SYML},
       ccy            SYMBOL CAPACITY 4{SYML},
       px_factor      DOUBLE{DEF},
       fx_symbol      SYMBOL CAPACITY 4{SYML},
       to_mwh         DOUBLE{DEF},
       lot_size       DOUBLE{DEF},
-      tick_size      DOUBLE{DEF}
+      tick_size      DOUBLE{DEF},
+      ts             TIMESTAMP{TS}
     ) TIMESTAMP(ts) PARTITION BY YEAR WAL
       DEDUP UPSERT KEYS(ts, symbol)"""
 
@@ -917,6 +991,24 @@ def ensure_tables_and_views(args, prefix: str):
                 FROM {t("trade_events")}
                 LATEST ON booked_ts PARTITION BY trade_id""")
                 created.append(t("trade_events_latest"))
+            if has("instruments"):
+                # Relative tenor: position on the curve from today, counted per
+                # curve and granularity over unexpired contracts (M1 is the
+                # front month, Q1 the first listed quarter, Z1 the first carbon
+                # December). It rolls, so it is computed at query time; cells
+                # about a past instant inline the same expression with @asof.
+                # tenor_n is the same position as a number, for bucketing and
+                # for sorting M2 before M10.
+                conn.execute(f"""
+                CREATE VIEW IF NOT EXISTS {t("tenors")} AS
+                SELECT symbol, exchange_symbol, curve, complex, granularity,
+                       delivery_start, delivery_end, hours, days, expiry,
+                       granularity || row_number() OVER (PARTITION BY curve, granularity ORDER BY delivery_start) AS tenor,
+                       row_number() OVER (PARTITION BY curve, granularity ORDER BY delivery_start) AS tenor_n,
+                       datediff('M', now(), delivery_start) AS months_to_delivery
+                FROM {t("instruments")}
+                WHERE expiry > now()""")
+                created.append(t("tenors"))
             if created:
                 print(f"[DDL] Views ready: {', '.join(created)}", flush=True)
 
@@ -1506,7 +1598,8 @@ class DeskPlanner:
                                      f"at {iso(s.late_booking)}"),
             (s.bad_mark_start, "4_curves", f"Manual mark on {sym('TTF', 'Q')} +2.50 EUR above its months (trader_11), "
                                            f"corrected (version 2) at {iso(s.bad_mark_end)}"),
-            (s.outage_start, "7_models", "3-minute quotes outage on EEX-routed contracts; curve_marks fall back to INTERP"),
+            (s.outage_start, "7_models", "3-minute outage of the ICE Endex quote feed (TTF, EUA); curve_marks fall back "
+                                         "to INTERP and model grading has no fresh quote"),
             (s.fat_finger_fill, "6_recon", f"LNG fill in {sym('JKM', 'M')} booked with 10x quantity by STP, amended "
                                            f"(QTY_CORRECTION) at {iso(s.fat_finger_fix)}"),
             (s.duplicate_deal, "6_recon", f"EU_GAS {sym('TTF', 'Q')} broker trade booked twice; duplicate cancelled "
@@ -1758,7 +1851,8 @@ def demo_events_df(rows) -> pd.DataFrame:
 # ----------------------------
 
 TABLE_SYMBOLS = {
-    "instruments": ["symbol", "curve", "complex", "granularity", "exchange", "unit", "ccy", "fx_symbol"],
+    "instruments": ["symbol", "curve", "complex", "granularity", "exchange", "exchange_code", "term_code",
+                    "month_code", "unit", "ccy", "fx_symbol"],
     "limits": ["book", "curve", "unit", "approved_by"],
     "quotes": ["symbol", "curve", "source"],
     "curve_marks": ["curve", "symbol", "source", "marked_by"],
@@ -1854,7 +1948,7 @@ class SpanGenerator:
         self.story = story
         self.seed = seed
         self.scale = scale
-        self.is_eex = mkt.exchange == "EEX"
+        self.is_outage = mkt.exchange == OUTAGE_EXCHANGE
         self.model_sel = np.where(np.isin(mkt.curve, ["TTF", "NBP", "UKPWR"]) & mkt.is_month & (mkt.rank < 24))[0]
         self.bad_quarter = int(np.where((mkt.curve == "TTF") & (mkt.gran == "Q"))[0][
             np.argmin(mkt.dstart[(mkt.curve == "TTF") & (mkt.gran == "Q")])])
@@ -1881,7 +1975,7 @@ class SpanGenerator:
         tod = np.where(mkt.cx[None, :] == "OIL", tod_oil[:, None], tod_gas[:, None])
         lam = mkt.tick_rate[None, :] * tod * self.scale * frac[:, None]
         outage = (secs >= self.story.outage_start) & (secs < self.story.outage_end)
-        lam[np.ix_(outage, self.is_eex)] = 0.0
+        lam[np.ix_(outage, self.is_outage)] = 0.0
         counts = rng.poisson(lam)
         si = np.repeat(np.arange(len(secs)), counts.sum(axis=1))
         ci = np.concatenate([np.repeat(np.arange(mkt.n), counts[i]) for i in range(len(secs))]) if si.size else np.zeros(0, int)
@@ -1930,7 +2024,7 @@ class SpanGenerator:
         px = np.round(px, 6)
         expected = mkt.tick_rate[None, :] * 300.0 * tod[:, None] * self.scale
         market = expected >= 1.0
-        outage = ((minute_secs >= s.outage_start) & (minute_secs < s.outage_end))[:, None] & self.is_eex[None, :]
+        outage = ((minute_secs >= s.outage_start) & (minute_secs < s.outage_end))[:, None] & self.is_outage[None, :]
         market &= ~outage
         src = np.where(market, "MARKET", "INTERP")
         by = np.full((n, mkt.n), "CURVE_SVC", dtype=object)
@@ -1961,7 +2055,7 @@ class SpanGenerator:
         k = len(sel)
         tsm = np.repeat(minute_secs, k) * NS
         inputs = tsm - 500_000_000
-        stale = ((minute_secs >= s.outage_start) & (minute_secs < s.outage_end))[:, None] & self.is_eex[None, sel]
+        stale = ((minute_secs >= s.outage_start) & (minute_secs < s.outage_end))[:, None] & self.is_outage[None, sel]
         inputs = np.where(stale.ravel(), s.outage_start * NS - 500_000_000, inputs)
         frames = []
         for name, m in (("champion_v1", champ), ("challenger_v2", chal)):
@@ -2069,12 +2163,15 @@ class SpanGenerator:
 
 def instruments_df(inst: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame({
-        "ts": np.zeros(len(inst), dtype=np.int64), "symbol": inst.symbol, "curve": inst.curve,
-        "complex": inst["complex"], "granularity": inst.granularity,
+        "ts": np.zeros(len(inst), dtype=np.int64), "symbol": inst.symbol,
+        "exchange_symbol": inst.exchange_symbol.astype(object),
+        "curve": inst.curve, "complex": inst["complex"], "granularity": inst.granularity,
         "delivery_start": pd.to_datetime(inst.delivery_start).astype("datetime64[ns]").astype("int64"),
         "delivery_end": pd.to_datetime(inst.delivery_end).astype("datetime64[ns]").astype("int64"),
         "hours": inst.hours.astype(np.int32), "days": inst.days.astype(np.int32),
-        "expiry": pd.to_datetime(inst.expiry).astype("datetime64[ns]").astype("int64"), "exchange": inst.exchange, "unit": inst.unit,
+        "expiry": pd.to_datetime(inst.expiry).astype("datetime64[ns]").astype("int64"),
+        "exchange": inst.exchange, "exchange_code": inst.exchange_code, "term_code": inst.term_code,
+        "month_code": inst.month_code, "unit": inst.unit,
         "ccy": inst.ccy, "px_factor": inst.px_factor.astype(float), "fx_symbol": inst.fx_symbol,
         "to_mwh": inst.to_mwh.astype(float), "lot_size": inst.lot_size.astype(float),
         "tick_size": inst.tick_size.astype(float)})
