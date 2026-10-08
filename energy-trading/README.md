@@ -206,9 +206,18 @@ on the primary 1 microsecond later as a second fill with the same `order_id`, wh
 how an order splits across venues. Every fill on the secondary venue is preceded, one
 nanosecond earlier, by a quote on that venue showing the book the router saw, so an
 `ASOF JOIN` from any EEX fill to EEX quotes finds the price it hit and a displayed size
-at least as large as the fill. While a venue's feed is down the router skips it. On the scale 0.2 comparison run about 19% of month
-fills and 24% of strip fills went to EEX, and about 3% of orders split. Broker and
-bilateral deals are not exchange trades and carry the venue `OTC` in positions.
+at least as large as the fill. While a venue's feed is down the router skips it. On the
+scale 1 dataset 19% of month fills, 22% of carbon December fills and 26% of strip fills
+on the dual-listed curves went to EEX, and 3% of orders split. Broker and bilateral
+deals are not exchange trades and carry the venue `OTC` in positions.
+
+Listings change where the desk trades, not what it trades. Checked against the generator
+before listings, same seed, window and anchors (scale 0.2, 4 to 7 October): the same
+3,369 orders with the same ids, times and quantities (109 of them now split into two
+fills), the same instrument positions in every snapshot, and a desk PnL for the demo day
+of 4,676,598 USD against 4,678,374 before. The difference, -1,776 USD, is the extra spread
+paid on the 64 fills routed to EEX that day (-1,800 USD); the remaining 24 USD is FX
+conversion, because the extra EEX quote streams move the FX feed's last tick.
 
 The planted feed outage silences EEX, not the primary. Marks keep coming from ICE, so
 `curve_marks` stays `MARKET` on the dual-listed curves and carries the `venue` it was
@@ -358,9 +367,10 @@ drill-down sibling right below them.
    `positions_live` live view, `1b_twin_window_function` the same cell as window
    functions over `fills` (live views are beta in 10.0), `1b_pnl_curve_by_symbol` one
    series per contract. `1c` markouts by desk with `HORIZON JOIN` at 0, 1s, 10s, 1m, 5m,
-   15m on raw ticks, each fill against its own venue's quotes; `1e_markouts_by_venue` the
-   same split by venue (EEX fills start further from mid: the wider spread). `1d` markouts by counterparty type over the booking log, from deal
-   time, at 1m to 4h against the 1-minute bars (voice deals are timed to the minute).
+   15m on raw ticks, each fill against its own venue's quotes. `1d` markouts by
+   counterparty type over the booking log, from deal time, at 1m to 4h against the
+   1-minute bars (voice deals are timed to the minute). `1e_markouts_by_venue` the `1c`
+   markouts split by venue (EEX fills start further from mid: the wider spread).
 2. **Exposure.** `2a` net position against limits, now versus intraday peak (the breach),
    `2a_limits_by_symbol` which contracts make it up. `2b` the breach chart. `2c` the
    delivery-month ladder with strips spread over their months, `PIVOT`ed by curve.
@@ -442,7 +452,7 @@ October, about 258M quotes), warm:
 | Cell | ms | Cell | ms |
 |---|---|---|---|
 | `0a`, `0b`, `0c` | 3 to 17 | `5a_lng_arb_jkm_ttf` | 23 |
-| `0d_listing_lookup` | 1,120 | `5a_ticks_half_hour` (18k rows) | 112 |
+| `0d_listing_lookup` | 25 | `5a_ticks_half_hour` (18k rows) | 112 |
 | `1a_pnl_by_book`, `_by_symbol` | 275 | `5b_gasoil_crack_and_brent_wti` | 5 |
 | `1b` (all three) | 320 to 335 | `5c_clean_spark_zscore` | 23 |
 | `1c_markouts_by_desk` | 1,370 | `5c_ticks_half_hour` (54k rows) | 270 |
@@ -455,10 +465,9 @@ October, about 258M quotes), warm:
 | | | `7c`, `7c_as_corrected`, `7d` | 19 to 40 |
 
 Everything is under 1.5 seconds warm. The slowest are the two markout cells, which join
-every fill to its own venue's raw ticks at six horizons, and `0d`, which takes the latest
-quote per contract and venue over a whole day of ticks to answer one lookup. The first
+every fill to its own venue's raw ticks at six horizons. The first
 run after a load or a restart is slower on the tick-level cells while the quote pages
-come in (here `1c` took 8.4 s, `0d` 3.9 s, `1a` and `1e` about 1.6 s), so run `check.py` once before
+come in (here `1c` took 8 to 10 s, `1a` up to 3 s, `1e` about 1.5 s), so run `check.py` once before
 the session. On the cluster expect the same shape with slower cold runs on a gp3 volume.
 
 ## Simplifications to be upfront about

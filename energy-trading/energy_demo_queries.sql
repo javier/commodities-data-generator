@@ -57,6 +57,8 @@ ORDER BY curve, granularity, tenor_n, is_primary DESC;
 -- @@ 0d_listing_lookup
 -- "What is this exchange code?" Paste any exchange symbol into @exchange_symbol: the
 -- listing it belongs to, the instrument behind it, and that venue's latest quote today.
+-- The quote filter names the one listing before touching the ticks, and LIMIT -1 takes
+-- the last row in time order, so the lookup reads a handful of rows, not the day.
 DECLARE @demo_day := '2026-10-07', @exchange_symbol := 'G3BM 2026-11'
 WITH l AS (
   SELECT symbol, exchange, exchange_symbol, ccp, lot_size, is_primary FROM energy_listings
@@ -65,7 +67,9 @@ WITH l AS (
 last_q AS (
   SELECT symbol, source, ts, bid, ask, bid_size, ask_size FROM energy_quotes
   WHERE ts IN @demo_day
-  LATEST ON ts PARTITION BY symbol, source
+    AND symbol IN (SELECT symbol FROM energy_listings WHERE exchange_symbol = @exchange_symbol)
+    AND source IN (SELECT exchange FROM energy_listings WHERE exchange_symbol = @exchange_symbol)
+  LIMIT -1
 )
 SELECT l.exchange_symbol, l.symbol, l.exchange, l.ccp, l.is_primary, l.lot_size,
        q.ts AS last_quote_ts, q.bid, q.ask, q.bid_size, q.ask_size
@@ -290,21 +294,6 @@ HORIZON JOIN energy_quotes AS q ON (t.symbol = q.symbol AND t.venue = q.source)
 LIST (0, 1s, 10s, 1m, 5m, 15m) AS h
 ORDER BY t.book, horizon_s;
 
--- @@ 1e_markouts_by_venue
--- The same markout split by venue for the dual-listed curves (TTF, EUA, UK power).
--- The secondary venue starts further underwater at horizon 0, because it pays a wider
--- spread, and otherwise behaves like the primary: same instrument, same risk.
-DECLARE @demo_day := '2026-10-07'
-SELECT h.offset / 1000000 AS horizon_s,
-       t.curve,
-       t.venue,
-       count() AS fills,
-       round(avg(10000 * CASE WHEN t.qty > 0 THEN 1 ELSE -1 END * (mid(q.bid, q.ask) - t.px) / t.px), 2)::decimal(8,2) AS markout_bps
-FROM (energy_fills WHERE ts IN @demo_day AND curve IN ('TTF', 'EUA', 'UKPWR')) AS t
-HORIZON JOIN energy_quotes AS q ON (t.symbol = q.symbol AND t.venue = q.source)
-LIST (0, 1s, 10s, 1m, 5m, 15m) AS h
-ORDER BY t.curve, t.venue, horizon_s;
-
 -- @@ 1d_markouts_by_counterparty
 -- Who adversely selects us: the same markout on broker and bilateral deals, by
 -- counterparty type, from the deal time (trade_ts), over the last three days. Banks and
@@ -326,6 +315,22 @@ FROM (t TIMESTAMP(ts)) AS t
 HORIZON JOIN energy_quotes_1m AS q ON (symbol)
 LIST (1m, 5m, 15m, 1h, 4h) AS h
 ORDER BY counterparty_type, horizon_min;
+
+
+-- @@ 1e_markouts_by_venue
+-- The 1c markout split by venue for the dual-listed curves (TTF, EUA, UK power).
+-- The secondary venue starts further underwater at horizon 0, because it pays a wider
+-- spread, and otherwise behaves like the primary: same instrument, same risk.
+DECLARE @demo_day := '2026-10-07'
+SELECT h.offset / 1000000 AS horizon_s,
+       t.curve,
+       t.venue,
+       count() AS fills,
+       round(avg(10000 * CASE WHEN t.qty > 0 THEN 1 ELSE -1 END * (mid(q.bid, q.ask) - t.px) / t.px), 2)::decimal(8,2) AS markout_bps
+FROM (energy_fills WHERE ts IN @demo_day AND curve IN ('TTF', 'EUA', 'UKPWR')) AS t
+HORIZON JOIN energy_quotes AS q ON (t.symbol = q.symbol AND t.venue = q.source)
+LIST (0, 1s, 10s, 1m, 5m, 15m) AS h
+ORDER BY t.curve, t.venue, horizon_s;
 
 
 -- =====================================================================================
