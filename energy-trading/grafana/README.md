@@ -14,9 +14,10 @@ datasource pointing at the instance the generator writes to. Checked on Grafana 
 with plugin `questdb-questdb-datasource` 0.1.8, against QuestDB 10.0.2.
 
 1. Dashboards > New > Import, upload `energy_desk_dashboard.json`.
-2. Pick the QuestDB datasource in the `QuestDB` selector at the top left (the
-   `DS_QUESTDB` variable; every panel follows it, so the same dashboard serves a local
-   instance and a cluster).
+2. Every panel reads the hidden `DS_QUESTDB` variable, which Grafana fills with the
+   instance's QuestDB datasource on import; the JSON carries no datasource UID, so the same
+   file serves a local instance and a cluster. With more than one QuestDB datasource, pick
+   it under Dashboard settings > Variables.
 3. Set the dashboard time range to include data. Times are UTC throughout: the data, the
    planted storyline and the dashboard.
 
@@ -69,7 +70,7 @@ is about two minutes and at 30 minutes it is 10 seconds.
 
 | Panel | Type | Reads | Matches |
 |---|---|---|---|
-| Intraday trading PnL by book, with drawdown | time series | `positions_running_day`, `quotes_10s`, `marks_live`, `usd_factor_asof` | `1b_twin_window_function` |
+| Intraday trading PnL by book, with drawdown | time series | `positions_running_day`, `quotes_10s`, `curve_marks`, `instruments` | `1b_twin_window_function` |
 | Front months, live | table | `quotes`, `listings`, `tenors_asof`, `settlements` | |
 | PnL and position blotter | table | `ledger`, `marks_live`, `usd_factor_asof`, `listings` | `1a_pnl_by_book` at minute marks |
 | Limit utilisation, now and intraday peak | table, gauge cells | `position_snapshots`, `fills`, `limits` | `2a_limits_now_vs_peak` |
@@ -87,6 +88,10 @@ Notes on some of them:
   keeps ticking.
 - The limits table compares positions with limits in delivery units, so it moves when a
   fill lands, not when prices move.
+- The PnL curve values each bucket at that bucket's mark and FX rate (the 10-second bars),
+  so on refresh only the newest bucket changes; history stays put. An instrument with no
+  bar yet in the range takes the curve builder's mark at the range start. The drawdown is
+  measured over the range, so it can step when the session high leaves a sliding range.
 - The curve evolution shows each tenor's change since the start of the range, in percent:
   it starts at zero on the left and shows how the curve moved. Grey is within 0.25 %; the
   colour steps are 0.5, 1 and 2 % either way for gas and power, and half that for Brent,
@@ -103,7 +108,11 @@ Notes on some of them:
   cancellations -236,450; sum -3,134,681, the total.
 
 The planted events from `demo_events` appear as annotations on the time-series panels,
-one colour per act; the toggles at the top hide them by act.
+with the act as the marker's tag. It is one query, and its toggle is hidden from the
+controls bar, on purpose: Grafana re-runs annotation queries on every refresh and a
+visible toggle shows a loading spinner each time, while the variables (`book`, `curve`,
+the datasource) refresh only when the dashboard loads. To switch the markers off, use
+Dashboard settings > Annotations > "Planted events".
 
 ## The two demo moves
 

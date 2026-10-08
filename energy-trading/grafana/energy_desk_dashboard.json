@@ -46,79 +46,13 @@
         "type": "dashboard"
       },
       {
-        "name": "Planted: Exposure",
+        "name": "Planted events",
         "datasource": {
           "type": "questdb-questdb-datasource",
           "uid": "${DS_QUESTDB}"
         },
         "enable": true,
-        "hide": false,
-        "iconColor": "#F2495C",
-        "target": {
-          "refId": "Anno",
-          "datasource": {
-            "type": "questdb-questdb-datasource",
-            "uid": "${DS_QUESTDB}"
-          },
-          "rawSql": "SELECT ts AS time, what AS text, act AS tags\nFROM ${prefix}demo_events\nWHERE act = '2_exposure' AND $__timeFilter(ts)",
-          "format": 1,
-          "queryType": "sql",
-          "editorMode": "code",
-          "rawQuery": true
-        }
-      },
-      {
-        "name": "Planted: Volatility",
-        "datasource": {
-          "type": "questdb-questdb-datasource",
-          "uid": "${DS_QUESTDB}"
-        },
-        "enable": true,
-        "hide": false,
-        "iconColor": "#8AB8FF",
-        "target": {
-          "refId": "Anno",
-          "datasource": {
-            "type": "questdb-questdb-datasource",
-            "uid": "${DS_QUESTDB}"
-          },
-          "rawSql": "SELECT ts AS time, what AS text, act AS tags\nFROM ${prefix}demo_events\nWHERE act = '3_vol' AND $__timeFilter(ts)",
-          "format": 1,
-          "queryType": "sql",
-          "editorMode": "code",
-          "rawQuery": true
-        }
-      },
-      {
-        "name": "Planted: Curves",
-        "datasource": {
-          "type": "questdb-questdb-datasource",
-          "uid": "${DS_QUESTDB}"
-        },
-        "enable": true,
-        "hide": false,
-        "iconColor": "#FADE2A",
-        "target": {
-          "refId": "Anno",
-          "datasource": {
-            "type": "questdb-questdb-datasource",
-            "uid": "${DS_QUESTDB}"
-          },
-          "rawSql": "SELECT ts AS time, what AS text, act AS tags\nFROM ${prefix}demo_events\nWHERE act = '4_curves' AND $__timeFilter(ts)",
-          "format": 1,
-          "queryType": "sql",
-          "editorMode": "code",
-          "rawQuery": true
-        }
-      },
-      {
-        "name": "Planted: Reconstruction",
-        "datasource": {
-          "type": "questdb-questdb-datasource",
-          "uid": "${DS_QUESTDB}"
-        },
-        "enable": true,
-        "hide": false,
+        "hide": true,
         "iconColor": "#FF9830",
         "target": {
           "refId": "Anno",
@@ -126,29 +60,7 @@
             "type": "questdb-questdb-datasource",
             "uid": "${DS_QUESTDB}"
           },
-          "rawSql": "SELECT ts AS time, what AS text, act AS tags\nFROM ${prefix}demo_events\nWHERE act = '6_recon' AND $__timeFilter(ts)",
-          "format": 1,
-          "queryType": "sql",
-          "editorMode": "code",
-          "rawQuery": true
-        }
-      },
-      {
-        "name": "Planted: Models",
-        "datasource": {
-          "type": "questdb-questdb-datasource",
-          "uid": "${DS_QUESTDB}"
-        },
-        "enable": true,
-        "hide": false,
-        "iconColor": "#B877D9",
-        "target": {
-          "refId": "Anno",
-          "datasource": {
-            "type": "questdb-questdb-datasource",
-            "uid": "${DS_QUESTDB}"
-          },
-          "rawSql": "SELECT ts AS time, what AS text, act AS tags\nFROM ${prefix}demo_events\nWHERE act = '7_models' AND $__timeFilter(ts)",
+          "rawSql": "SELECT ts AS time, what AS text, act AS tags\nFROM ${prefix}demo_events\nWHERE $__timeFilter(ts)",
           "format": 1,
           "queryType": "sql",
           "editorMode": "code",
@@ -166,7 +78,7 @@
         "query": "questdb-questdb-datasource",
         "refresh": 1,
         "regex": "",
-        "hide": 0,
+        "hide": 2,
         "includeAll": false,
         "multi": false,
         "options": [],
@@ -261,7 +173,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "Intraday trading PnL by book, USD, with drawdown",
-      "description": "Today's trading PnL per book on the panel interval (10 s and up) to the right edge of the time range: running position and cash from positions_running_day, the mark of each bucket from the 10-second bars of the primary listing (quotes_10s), USD from usd_factor_asof; and the drawdown of the selected books' total over the range. Times are UTC.",
+      "description": "Today's trading PnL per book on the panel interval (10 s and up) to the right edge of the time range: running position and cash from positions_running_day, each bucket's mark and FX rate from the 10-second bars of the primary listing (quotes_10s), so a past bucket keeps its value from one refresh to the next; and the drawdown of the selected books' total over the range. Times are UTC.",
       "datasource": {
         "type": "questdb-questdb-datasource",
         "uid": "${DS_QUESTDB}"
@@ -280,7 +192,7 @@
             "type": "questdb-questdb-datasource",
             "uid": "${DS_QUESTDB}"
           },
-          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp)\nWITH grid AS (\n  SELECT ts, book, symbol, last(pos) AS pos, last(cost) AS cost\n  FROM ${prefix}positions_running_day\n  WHERE ts <= @asof AND book IN (${book:singlequote})\n  SAMPLE BY $__sampleByInterval FILL(PREV)\n),\nmk AS (\n  SELECT ts, symbol, last(close) AS mark\n  FROM ${prefix}quotes_10s\n  WHERE $__timeFilter(ts) AND ts <= @asof\n    AND symbol IN (SELECT DISTINCT symbol FROM ${prefix}fills\n                   WHERE ts >= @day AND ts <= @asof AND book IN (${book:singlequote}))\n  SAMPLE BY $__sampleByInterval FILL(PREV)\n),\npnl AS (\n  SELECT g.ts, g.book, sum((g.pos * coalesce(m.mark, ml.price) - g.cost) * u.factor) AS pnl_usd\n  FROM grid g\n  LEFT JOIN mk m ON (ts, symbol)\n  JOIN ${prefix}marks_live ml ON (symbol)\n  JOIN ${prefix}usd_factor_asof u ON (symbol)\n  GROUP BY g.ts, g.book\n),\nr AS (\n  SELECT ts, book, pnl_usd FROM pnl WHERE $__timeFilter(ts)\n),\ntot AS (\n  SELECT ts, sum(pnl_usd) AS total FROM r GROUP BY ts ORDER BY ts\n),\ndd AS (\n  SELECT ts, total - max(total) OVER (ORDER BY ts) AS drawdown FROM tot\n)\nSELECT ts, book, pnl_usd FROM r\nUNION ALL\nSELECT ts, 'Drawdown, selected books' AS book, drawdown AS pnl_usd FROM dd\nORDER BY ts, book",
+          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp),\n        @from := '${__from:date:iso}'\nWITH grid AS (\n  SELECT ts, book, symbol, last(pos) AS pos, last(cost) AS cost\n  FROM ${prefix}positions_running_day\n  WHERE ts <= @asof AND book IN (${book:singlequote})\n  SAMPLE BY $__sampleByInterval FILL(PREV)\n),\nmk AS (\n  SELECT ts, symbol, last(close) AS mark\n  FROM ${prefix}quotes_10s\n  WHERE $__timeFilter(ts) AND ts <= @asof\n    AND symbol IN (SELECT DISTINCT symbol FROM ${prefix}fills\n                   WHERE ts >= @day AND ts <= @asof AND book IN (${book:singlequote}))\n  SAMPLE BY $__sampleByInterval FILL(PREV)\n),\nfx AS (\n  SELECT ts, symbol AS fx_symbol, last(close) AS usd\n  FROM ${prefix}quotes_10s\n  WHERE symbol IN ('EURUSD', 'GBPUSD', 'EURGBP') AND $__timeFilter(ts) AND ts <= @asof\n  SAMPLE BY $__sampleByInterval FILL(PREV)\n),\nbase AS (\n  SELECT symbol, price FROM ${prefix}curve_marks\n  WHERE ts <= @from AND ts > dateadd('d', -1, @from::timestamp)\n  LATEST ON ts PARTITION BY symbol\n),\nfx0 AS (\n  SELECT symbol AS fx_symbol, mid(bid, ask) AS usd FROM ${prefix}quotes\n  WHERE symbol IN ('EURUSD', 'GBPUSD', 'EURGBP') AND ts <= @from AND ts > dateadd('h', -1, @from::timestamp)\n  LATEST ON ts PARTITION BY symbol\n),\npnl AS (\n  SELECT g.ts, g.book,\n         sum((g.pos * coalesce(m.mark, b.price) - g.cost) * i.px_factor * coalesce(f.usd, f0.usd, 1.0)) AS pnl_usd\n  FROM grid g\n  LEFT JOIN mk m ON (ts, symbol)\n  LEFT JOIN base b ON b.symbol = g.symbol\n  JOIN ${prefix}instruments i ON i.symbol = g.symbol\n  LEFT JOIN fx f ON f.ts = g.ts AND f.fx_symbol = i.fx_symbol\n  LEFT JOIN fx0 f0 ON f0.fx_symbol = i.fx_symbol\n  GROUP BY g.ts, g.book\n),\nr AS (\n  SELECT ts, book, pnl_usd FROM pnl WHERE $__timeFilter(ts)\n),\ntot AS (\n  SELECT ts, sum(pnl_usd) AS total FROM r GROUP BY ts ORDER BY ts\n),\ndd AS (\n  SELECT ts, total - max(total) OVER (ORDER BY ts) AS drawdown FROM tot\n)\nSELECT ts, book, pnl_usd FROM r\nUNION ALL\nSELECT ts, 'Drawdown, selected books' AS book, drawdown AS pnl_usd FROM dd\nORDER BY ts, book",
           "format": 1,
           "queryType": "sql",
           "editorMode": "code",
