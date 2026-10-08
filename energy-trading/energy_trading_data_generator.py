@@ -1081,68 +1081,180 @@ def ensure_tables_and_views(args, prefix: str):
                       f"Use the window-function twins in the query pack.", flush=True)
 
         if args.create_plain_views:
+            # Plain views store nothing: each runs as an inlined subquery of the
+            # query that references it. The *_asof views take @asof, the *_day
+            # views take @day (the day's start; a 'YYYY-MM-DD' string works);
+            # both are OVERRIDABLE, so a cell sets them with its own leading
+            # DECLARE and every view it touches, nested ones included, sees that
+            # value. Every view is bounded in time: a lookback before @asof, or
+            # the day. Parameters are times only: instrument filters stay in the
+            # calling query and are pushed down. CREATE OR REPLACE so a re-run
+            # updates a definition in place. Nesting is at most two levels.
             created = []
+
+            def view(name, body):
+                conn.execute(f"CREATE OR REPLACE VIEW {t(name)} AS (\n{body}\n)")
+                created.append(t(name))
+
+            fx_pairs = ", ".join(f"'{p}'" for p in FX_PAIRS)
             if has("position_snapshots", "fills"):
                 # The ledger for intraday PnL: opening position as a pseudo-fill
                 # at settlement, plus today's exchange fills.
-                conn.execute(f"""
-                CREATE VIEW IF NOT EXISTS {t("ledger")} AS
+                view("ledger", f"""
                 SELECT ts, book, symbol, curve, qty, settle_px AS px, 'sod' AS src
                 FROM {t("position_snapshots")}
                 UNION ALL
                 SELECT ts, book, symbol, curve, qty, px, 'trade' AS src
                 FROM {t("fills")}""")
-                created.append(t("ledger"))
             if has("curve_marks"):
-                # Latest mark per contract; a correction at the same ts wins
-                # because it was written later.
-                conn.execute(f"""
-                CREATE VIEW IF NOT EXISTS {t("curve_marks_latest")} AS
-                SELECT symbol, curve, price, version, source, ts
+                # The curve as it stood at @asof: latest mark per contract in the
+                # day up to @asof (marks are published every minute). A correction
+                # at the same ts wins because it was written later.
+                view("marks_asof", f"""
+                DECLARE OVERRIDABLE @asof := now()
+                SELECT symbol, curve, price, version, source, venue, ts
                 FROM {t("curve_marks")}
+                WHERE ts <= @asof AND ts > dateadd('d', -1, @asof::timestamp)
                 LATEST ON ts PARTITION BY symbol""")
-                created.append(t("curve_marks_latest"))
+                view("curve_marks_latest", f"SELECT * FROM {t('marks_asof')}")
+            if has("quotes"):
+                # Latest FX mid per pair in the hour up to @asof (FX ticks several
+                # times a second). Naming the pairs lets LATEST ON stop at each
+                # pair's last tick.
+                view("fx_asof", f"""
+                DECLARE OVERRIDABLE @asof := now()
+                SELECT symbol, mid(bid, ask) AS usd, ts
+                FROM {t("quotes")}
+                WHERE symbol IN ({fx_pairs}) AND ts <= @asof AND ts > dateadd('h', -1, @asof::timestamp)
+                LATEST ON ts PARTITION BY symbol""")
+            if has("quotes", "instruments"):
+                # What one unit of price is worth in USD at @asof: px_factor
+                # (pence to pounds) times the FX rate of the contract's currency.
+                view("usd_factor_asof", f"""
+                DECLARE OVERRIDABLE @asof := now()
+                SELECT i.symbol, i.px_factor * coalesce(x.usd, 1.0) AS factor
+                FROM {t("instruments")} i
+                LEFT JOIN {t("fx_asof")} x ON x.symbol = i.fx_symbol""")
             if has("trade_events"):
-                # Latest version of every trade, cancelled ones included.
-                # Filter status after this view, never inside it.
-                conn.execute(f"""
-                CREATE VIEW IF NOT EXISTS {t("trade_events_latest")} AS
-                SELECT *
-                FROM {t("trade_events")}
-                LATEST ON booked_ts PARTITION BY trade_id""")
-                created.append(t("trade_events_latest"))
+                # Deals done on the day of @asof (trade_ts from that day's 00:00),
+                # as known at @asof versus as restated now. The two definitions
+                # differ by one line, AND booked_ts <= @asof: that is the whole
+                # reconstruction. Scope is the deal date, so every amendment and
+                # cancel of those deals is caught whenever it was booked, and a
+                # correction to an earlier day's deal is out of scope by
+                # definition. The booked_ts >= 00:00 bound changes no result (a
+                # booking never precedes its deal); it starts the scan at the
+                # day's partitions. Status is filtered after LATEST ON (a WHERE at
+                # the same level would run first and bring back a cancelled
+                # trade's earlier NEW row).
+                view("book_asof", f"""
+                DECLARE OVERRIDABLE @asof := now()
+                (SELECT * FROM {t("trade_events")}
+                 WHERE booked_ts >= timestamp_floor('d', @asof::timestamp)
+                   AND booked_ts <= @asof
+                 LATEST ON booked_ts PARTITION BY trade_id)
+                WHERE status != 'CANCELLED' AND trade_ts >= timestamp_floor('d', @asof::timestamp) AND trade_ts <= @asof""")
+                view("book_restated", f"""
+                DECLARE OVERRIDABLE @asof := now()
+                (SELECT * FROM {t("trade_events")}
+                 WHERE booked_ts >= timestamp_floor('d', @asof::timestamp)
+                 LATEST ON booked_ts PARTITION BY trade_id)
+                WHERE status != 'CANCELLED' AND trade_ts >= timestamp_floor('d', @asof::timestamp) AND trade_ts <= @asof""")
+                view("trade_events_latest", f"SELECT * FROM {t('book_restated')}")
             if has("instruments", "listings"):
-                # Relative tenor: position on the curve from today, counted per
-                # curve and granularity over unexpired contracts (M1 is the
+                # Relative tenor at @asof: position on the curve, counted per curve
+                # and granularity over contracts unexpired at @asof (M1 is the
                 # front month, Q1 the first listed quarter, Z1 the first carbon
-                # December). It rolls, so it is computed at query time; cells
-                # about a past instant inline the same expression with @asof.
-                # tenor_n is the same position as a number, for bucketing and
-                # for sorting M2 before M10. exchange_symbol here is the primary
-                # listing's, the code an instrument-level row is known by.
-                conn.execute(f"""
-                CREATE VIEW IF NOT EXISTS {t("tenors")} AS
+                # December). tenor_n is the same position as a number, for
+                # bucketing and for sorting M2 before M10. exchange_symbol is the
+                # primary listing's, the code an instrument-level row is known by.
+                # tenors is the same at the default, now().
+                view("tenors_asof", f"""
+                DECLARE OVERRIDABLE @asof := now()
                 SELECT i.symbol, l.exchange AS primary_exchange, l.exchange_symbol,
                        i.curve, i.complex, i.granularity,
                        i.delivery_start, i.delivery_end, i.hours, i.days, i.expiry,
                        i.granularity || row_number() OVER (PARTITION BY i.curve, i.granularity ORDER BY i.delivery_start) AS tenor,
                        row_number() OVER (PARTITION BY i.curve, i.granularity ORDER BY i.delivery_start) AS tenor_n,
-                       datediff('M', now(), i.delivery_start) AS months_to_delivery
+                       datediff('M', @asof, i.delivery_start) AS months_to_delivery
                 FROM {t("instruments")} i
                 JOIN {t("listings")} l ON l.symbol = i.symbol AND l.is_primary
-                WHERE i.expiry > now()""")
-                created.append(t("tenors"))
+                WHERE i.expiry > @asof""")
+                view("tenors", f"SELECT * FROM {t('tenors_asof')}")
                 # One row per listing with the instrument's delivery and tenor:
                 # what the instrument master cell shows.
-                conn.execute(f"""
-                CREATE VIEW IF NOT EXISTS {t("instrument_master")} AS
+                view("instrument_master", f"""
                 SELECT t.curve, t.tenor, t.tenor_n, l.symbol, l.exchange, l.mic, l.exchange_code,
                        l.exchange_physical_code, l.exchange_symbol, l.ccp, l.is_primary, l.liquidity_share,
                        l.lot_size, l.tick_size, i.unit, i.ccy, t.granularity, t.delivery_start, t.delivery_end, t.expiry
                 FROM {t("listings")} l
                 JOIN {t("instruments")} i ON i.symbol = l.symbol
-                JOIN {t("tenors")} t ON t.symbol = l.symbol""")
-                created.append(t("instrument_master"))
+                JOIN {t("tenors_asof")} t ON t.symbol = l.symbol""")
+            if has("quotes"):
+                # One day of 1-minute bars: each leg of a spread is this view with
+                # a WHERE symbol = ... filter, which is pushed down to the bars.
+                view("mid_1m_day", f"""
+                DECLARE OVERRIDABLE @day := timestamp_floor('d', now())
+                SELECT ts, symbol, curve, close, last_bid, last_ask, ticks
+                FROM {t("quotes_1m")}
+                WHERE ts >= @day::timestamp AND ts < dateadd('d', 1, @day::timestamp)""")
+            if has("fills"):
+                # Running position and cash per book and instrument over the day's
+                # fills (what the positions_live live view maintains at ingestion),
+                # plus the running position per venue.
+                view("positions_running_day", f"""
+                DECLARE OVERRIDABLE @day := timestamp_floor('d', now())
+                SELECT ts, book, symbol, curve, venue, qty, px,
+                       sum(qty)      OVER (PARTITION BY book, symbol ORDER BY ts)        AS pos,
+                       sum(qty * px) OVER (PARTITION BY book, symbol ORDER BY ts)        AS cost,
+                       sum(qty)      OVER (PARTITION BY book, symbol, venue ORDER BY ts) AS venue_pos
+                FROM {t("fills")}
+                WHERE ts >= @day::timestamp AND ts < dateadd('d', 1, @day::timestamp)""")
+            if has("model_prices", "quotes", "instruments", "listings"):
+                # Every model price of the day graded against the last quote of
+                # the preceding 1-minute bar (the ASOF match with a one-minute
+                # tolerance, at a fraction of the cost over a day of ticks). A
+                # minute with no quote keeps its row with a null bid: counted,
+                # not graded.
+                view("model_graded_day", f"""
+                DECLARE OVERRIDABLE @day := timestamp_floor('d', now())
+                SELECT m.ts, m.model_version, m.symbol, m.curve, m.model_px,
+                       b.last_bid AS bid, b.last_ask AS ask,
+                       10000 * (m.model_px - mid(b.last_bid, b.last_ask)) / mid(b.last_bid, b.last_ask) AS err_bps,
+                       CASE WHEN month(i.delivery_start) IN (11, 12, 1, 2) THEN 'winter' ELSE 'summer' END AS season,
+                       i.delivery_start, i.granularity, t.tenor, t.tenor_n, t.exchange_symbol
+                FROM (SELECT ts, dateadd('m', -1, ts) AS bar_ts, model_version, symbol, curve, model_px
+                      FROM {t("model_prices")} WHERE ts >= @day::timestamp AND ts < dateadd('d', 1, @day::timestamp)) m
+                JOIN {t("instruments")} i ON i.symbol = m.symbol
+                LEFT JOIN (SELECT ts, symbol, last_bid, last_ask FROM {t("quotes_1m")}
+                           WHERE ts >= dateadd('m', -1, @day::timestamp) AND ts < dateadd('d', 1, @day::timestamp)) b
+                       ON b.symbol = m.symbol AND b.ts = m.bar_ts
+                LEFT JOIN {t("tenors_asof")} t ON t.symbol = m.symbol""")
+            if has("curve_marks", "instruments"):
+                # Strip consistency per minute as the marks were published
+                # (version 1): each quarter, season and cal against the days- or
+                # hours-weighted average of its months (DST-aware hours).
+                view("strip_gaps_day", f"""
+                DECLARE OVERRIDABLE @day := timestamp_floor('d', now())
+                WITH k AS (
+                  SELECT k.ts, k.symbol, k.price, k.source, k.marked_by, c.curve, c.complex, c.granularity,
+                         c.delivery_start, c.delivery_end, c.hours, c.days
+                  FROM {t("curve_marks")} k
+                  JOIN {t("instruments")} c ON (symbol)
+                  WHERE k.curve IN ('TTF', 'NBP', 'UKPWR') AND k.version = 1
+                    AND k.ts >= @day::timestamp AND k.ts < dateadd('d', 1, @day::timestamp)
+                )
+                SELECT s.ts, s.symbol, s.source, s.marked_by, s.price AS strip_mark,
+                       sum(m.price * (CASE WHEN s.complex = 'GAS' THEN m.days ELSE m.hours END))
+                         / sum(CASE WHEN s.complex = 'GAS' THEN m.days ELSE m.hours END) AS from_months,
+                       s.price - sum(m.price * (CASE WHEN s.complex = 'GAS' THEN m.days ELSE m.hours END))
+                         / sum(CASE WHEN s.complex = 'GAS' THEN m.days ELSE m.hours END) AS gap,
+                       count() AS months
+                FROM k s
+                JOIN k m ON m.ts = s.ts AND m.curve = s.curve AND m.granularity = 'M'
+                        AND m.delivery_start >= s.delivery_start AND m.delivery_end <= s.delivery_end
+                WHERE s.granularity IN ('Q', 'S', 'Y')
+                GROUP BY s.ts, s.symbol, s.source, s.marked_by, s.price""")
             if created:
                 print(f"[DDL] Views ready: {', '.join(created)}", flush=True)
 
@@ -2324,7 +2436,10 @@ class SpanGenerator:
             frames.append(pd.DataFrame({
                 "ts": ts, "symbol": mkt.sym[ci], "curve": mkt.curve[ci], "bid": bid, "ask": ask,
                 "bid_size": bsz * lot_size, "ask_size": asz * lot_size, "source": mkt.l_exchange[li]}))
+        # FX draws from its own stream, so adding or removing a quote stream
+        # leaves the FX ticks, and every USD conversion, exactly as they were.
         fx = mkt.fx_at(secs)
+        rng = self._rng(t0_ns // 1_000_000, 6)
         for pair in FX_PAIRS:
             cnt = rng.poisson(FX_TICK_RATE * tod_gas * self.scale * frac)
             fi = np.repeat(np.arange(len(secs)), cnt)
@@ -2704,19 +2819,26 @@ def restore_from_db(args, prefix: str, mkt: MarketModel, planner: DeskPlanner, s
     t = lambda n: table_name(n, prefix)
     with connect_qwp(args) as conn:
         primaries = ", ".join(f"'{e}'" for e in sorted({v[0][0] for v in LISTINGS.values()} | {"FX_FEED"}))
-        mids = query_df(conn, f"SELECT symbol, mid(bid, ask) AS mid FROM {t('quotes')} "
-                              f"WHERE source IN ({primaries}) LATEST ON ts PARTITION BY symbol")
-        mid = dict(zip(mids.symbol.astype(str), mids["mid"].astype(float)))
+        # Every read is bounded in time: the last day of quotes, snapshots of the
+        # last three days, today's fills and bookings, the last week of settlements.
         day_start = start_sec - start_sec % 86400
+        since = lambda days: ns_to_iso((start_sec - days * 86400) * NS)
+        mids = query_df(conn, f"SELECT symbol, mid(bid, ask) AS mid FROM {t('quotes')} "
+                              f"WHERE source IN ({primaries}) AND ts >= '{since(1)}' LATEST ON ts PARTITION BY symbol")
+        mid = dict(zip(mids.symbol.astype(str), mids["mid"].astype(float)))
         snaps = query_df(conn, f"SELECT book, symbol, venue, qty FROM {t('position_snapshots')} "
-                               f"WHERE ts = (SELECT max(ts) FROM {t('position_snapshots')})")
+                               f"WHERE ts = (SELECT max(ts) FROM {t('position_snapshots')} WHERE ts >= '{since(3)}')")
         fills = query_df(conn, f"SELECT book, symbol, venue, sum(qty) AS qty FROM {t('fills')} "
                                f"WHERE ts >= '{ns_to_iso(day_start * NS)}' GROUP BY book, symbol, venue")
+        # Latest version of each trade among today's bookings: a trade whose
+        # latest booking is today, which is what the filter after LATEST ON asked.
         deals = query_df(conn, f"SELECT book, symbol, sum(qty) AS qty FROM ("
-                               f"(SELECT * FROM {t('trade_events')} LATEST ON booked_ts PARTITION BY trade_id) "
-                               f"WHERE status != 'CANCELLED' AND channel != 'EXCH' AND booked_ts >= '{ns_to_iso(day_start * NS)}'"
+                               f"(SELECT * FROM {t('trade_events')} WHERE booked_ts >= '{ns_to_iso(day_start * NS)}' "
+                               f"LATEST ON booked_ts PARTITION BY trade_id) "
+                               f"WHERE status != 'CANCELLED' AND channel != 'EXCH'"
                                f") GROUP BY book, symbol")
-        settle = query_df(conn, f"SELECT symbol, price FROM {t('settlements')} LATEST ON ts PARTITION BY symbol")
+        settle = query_df(conn, f"SELECT symbol, price FROM {t('settlements')} WHERE ts >= '{since(7)}' "
+                                f"LATEST ON ts PARTITION BY symbol")
     live = dict(mkt.anchors)
     for c in BASE_CURVES + ["EURUSD", "GBPUSD"]:
         key = mkt.sym[mkt.front[c]] if c in BASE_CURVES else c
@@ -2975,7 +3097,7 @@ def main():
                         "or, failing that, from the database.")
     p.add_argument("--create_views", type=bool_arg, default=True, help="Materialized views.")
     p.add_argument("--create_live_view", type=bool_arg, default=True, help="The positions live view (beta).")
-    p.add_argument("--create_plain_views", type=bool_arg, default=True, help="ledger, curve_marks_latest, trade_events_latest.")
+    p.add_argument("--create_plain_views", type=bool_arg, default=True, help="Plain views: ledger, tenors, instrument_master and the parameterised *_asof and *_day views.")
     p.add_argument("--tables", type=str, default="all", help="Comma-separated base tables to create and populate.")
     p.add_argument("--parquet_encodings", type=bool_arg, default=True, help="Per-column PARQUET(...) encodings in the DDL.")
     p.add_argument("--short_ttl", type=bool_arg, default=False)

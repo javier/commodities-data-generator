@@ -21,7 +21,7 @@ act something to find. Everything is generic: no real desk, no real names.
 |---|---|
 | `energy_trading_data_generator.py` | The generator. Creates every table and view in code, backfills history with several workers, then streams in real time |
 | `energy_demo_queries.sql` | The query pack: seven acts, one cell per analytic, with presenter notes |
-| `check.py` | Smoke test: runs every cell and prints `ok` with row count and timing, or `FAIL` |
+| `check.py` | Smoke test: runs every cell and prints `ok` with row count and timing, or `FAIL`; `--dump` and `--compare` check a change against a saved run |
 | `energy_backfill.sh`, `energy_realtime.sh` | Local runners (QuestDB OSS on `127.0.0.1:9000`) |
 | `energy_enterprise_backfill.sh`, `energy_enterprise_realtime.sh` | Cluster runners (QWP over TLS, token auth, VPC-internal endpoints) |
 | `requirements.txt` | `questdb[dataframe]>=5.0`, numpy, pandas, yfinance |
@@ -90,7 +90,7 @@ workers mostly buys O3 merge work, not speed.
 ```
 
 Volumes at `--scale_factor 1` for 4 October 00:00 to 8 October 12:00 UTC (a Sunday,
-three full weekdays and a morning): quotes 258M (28M of them on EEX), curve_marks 1.6M,
+three full weekdays and a morning): quotes 255M (27M of them on EEX), curve_marks 1.6M,
 model_prices 930k, iv_marks 233k, fills 19k, trade_events 21k, settlements 729,
 position_snapshots 729, plus the materialized views (quotes_1m 1.15M, quotes_5m 297k). A
 full weekday is about 71M quotes, 7.5M of them on EEX (low thousands of ticks a second
@@ -217,7 +217,21 @@ before listings, same seed, window and anchors (scale 0.2, 4 to 7 October): the 
 fills), the same instrument positions in every snapshot, and a desk PnL for the demo day
 of 4,676,598 USD against 4,678,374 before. The difference, -1,776 USD, is the extra spread
 paid on the 64 fills routed to EEX that day (-1,800 USD); the remaining 24 USD is FX
-conversion, because the extra EEX quote streams move the FX feed's last tick.
+conversion, because the extra EEX quote streams moved the FX feed's last tick (17 USD of
+it on the opening book). FX ticks now draw from their own random stream, so a future
+change to the quote streams leaves every USD conversion exactly where it was.
+
+| Book (demo day PnL, USD) | Before listings | After listings | Difference | Extra spread on EEX fills |
+|---|---|---|---|---|
+| CARBON | -621,695 | -621,933 | -238 | -235 |
+| EU_GAS | 6,228,471 | 6,227,516 | -955 | -980 |
+| LNG | -450,574 | -450,632 | -58 | -57 |
+| UK_POWER | 459,492 | 458,967 | -525 | -528 |
+| CRUDE | -37,320 | -37,320 | 0 | 0 |
+| PRODUCTS | -900,000 | -900,000 | 0 | 0 |
+| Desk | 4,678,374 | 4,676,598 | -1,776 | -1,800 |
+
+CRUDE and PRODUCTS trade only single-listed curves, so routing never touches them.
 
 The planted feed outage silences EEX, not the primary. Marks keep coming from ICE, so
 `curve_marks` stays `MARKET` on the dual-listed curves and carries the `venue` it was
@@ -257,11 +271,11 @@ the first delivery month. `term_code` and `month_code` stay in `instruments`.
 vol analyst or a risk report means by tenor is the relative one: the position on the
 curve from today, M1 (front month), M2, ..., Q1, S1, Y1, and Z1 for the first carbon
 December. It rolls (Jan-27 is M3 today and M2 next month), so it is computed at query
-time by the `energy_tenors` view: unexpired contracts numbered per curve and granularity
-in delivery order, with `tenor`, `tenor_n` (the number, for sorting and bucketing) and
-`months_to_delivery`. Cells about a past instant (`4e`, `6a`, `6b`, `6c`) compute the
-same expression with `@asof` in place of `now()`, so a reconstructed book reads in the
-tenors the desk saw then.
+time by the `energy_tenors_asof` view: contracts unexpired at `@asof` numbered per curve
+and granularity in delivery order, with `tenor`, `tenor_n` (the number, for sorting and
+bucketing) and `months_to_delivery`. `@asof` defaults to `now()` (`energy_tenors` is that
+default); cells about a past instant (`4e`, `6a`, `6b`) set it, so a reconstructed book
+reads in the tenors the desk saw then.
 
 Two-factor model per base curve (Brent, TTF, EUA): a slow random walk `L(t)` (daily vol
 0.8% oil, 1.5% gas, 1.2% carbon) and a fast mean-reverting factor `S(t)` (two-hour
@@ -346,6 +360,63 @@ and the reconstruction.
 
 All of them are listed in `demo_events` (cell `0a`).
 
+## Views
+
+The definitions the cells share live in plain views, created by the generator with the
+tables (`--create_plain_views`, `CREATE OR REPLACE`, so a re-run updates a definition in
+place). A view stores nothing: its query is inlined into the query that references it,
+so filters and joins are optimised across it. The parameterised ones declare their
+variables `OVERRIDABLE`:
+
+| View | Parameter, default | Returns |
+|---|---|---|
+| `energy_marks_asof` | `@asof`, `now()` | latest mark per contract in the day up to `@asof`: `price, version, source, venue, ts` |
+| `energy_fx_asof` | `@asof`, `now()` | latest `usd` mid per FX pair in the hour up to `@asof` |
+| `energy_usd_factor_asof` | `@asof`, `now()` | per contract, `px_factor` times its currency's USD rate: what one unit of price is worth in USD |
+| `energy_tenors_asof` | `@asof`, `now()` | relative tenor of every contract unexpired at `@asof`, with the primary exchange symbol |
+| `energy_book_asof` | `@asof`, `now()` | deals done on the day of `@asof` (from 00:00), as known at `@asof`: latest version per deal booked by then, cancelled ones dropped |
+| `energy_book_restated` | `@asof`, `now()` | the same deals as the booking log says now |
+| `energy_mid_1m_day` | `@day`, today's 00:00 | one day of 1-minute bars: `close, last_bid, last_ask, ticks` |
+| `energy_positions_running_day` | `@day`, today's 00:00 | running position and cash per book and contract over the day's fills, and the running position per venue |
+| `energy_model_graded_day` | `@day`, today's 00:00 | every model price of the day against the last quote of the preceding minute: `err_bps`, season, tenor |
+| `energy_strip_gaps_day` | `@day`, today's 00:00 | per minute and strip, as published: strip mark, the weighted average of its months, the gap |
+
+Without parameters: `energy_ledger` (opening book as a pseudo-fill plus today's fills),
+`energy_tenors` and `energy_curve_marks_latest` and `energy_trade_events_latest` (the
+`_asof` and `book_restated` views at their defaults), `energy_instrument_master` (one
+row per listing).
+
+A cell overrides a parameter with its own leading `DECLARE`, and every view it touches
+follows, nested ones included:
+
+```sql
+DECLARE @asof := '2026-10-07T12:00:00Z'
+SELECT b.book, sum(b.qty * (m.price - b.px) * u.factor) AS mtm_usd
+FROM energy_book_asof b
+JOIN energy_marks_asof m ON (symbol)
+JOIN energy_usd_factor_asof u ON (symbol)
+GROUP BY b.book;
+```
+
+Cells about the demo day as a whole set `@asof` to its last instant,
+`dateadd('d', 1, @demo_day::timestamp) - 1`, and `@day := @demo_day`. `@day` is the
+day's start (`timestamp_floor('d', now())` by default; a `'YYYY-MM-DD'` string works),
+so a view can also bound a joined table relative to it: the grading view reads the bars
+from the minute before the day. Views take times,
+never instruments: one statement holds one value per variable, so a spread reads the
+same day view once per leg with `WHERE symbol = ...`, and that filter is pushed down.
+`6c` compares two instants, `@t1` and `@t2`, so it keeps its two sets of marks and
+bookings inline; the mechanics are the point of that cell anyway.
+
+The reconstruction rests on two definitions. `SHOW CREATE VIEW energy_book_asof` and
+`SHOW CREATE VIEW energy_book_restated` differ by one line:
+
+```sql
+WHERE booked_ts <= @asof
+```
+
+`0e_definitions` lists every view with its status.
+
 ## The query pack, act by act
 
 Every cell runs on its own. `DECLARE @name := ...` at the top of a cell holds the demo
@@ -360,7 +431,8 @@ drill-down sibling right below them.
    unexpired listing with its desk symbol, exchange symbol, venue, clearing house, tenor,
    delivery and lot, from the `energy_instrument_master` view. `0d_listing_lookup` the
    other way round: paste an exchange symbol (`G3BM 2026-11`) and get the instrument
-   behind it and that venue's latest quote.
+   behind it and that venue's latest quote. `0e_definitions` the views every cell stands
+   on.
 1. **Intraday PnL.** `1a` PnL by book in USD: the opening book revalued from settlement
    against today's trading, one GROUP BY over the `ledger` view; `1a_pnl_by_book_by_symbol`
    the same per contract. `1b` the PnL curve with drawdown on a 5-minute grid from the
@@ -398,12 +470,13 @@ drill-down sibling right below them.
    through European hours, in ticks; `5f_divergence_episodes` the minutes where the two
    venues sat 1.75 ticks or more apart for at least three seconds (on the demo day it
    finds the five planted TTF episodes and nothing else).
-6. **Reconstruction.** `6a` the book as known at `@asof` versus as restated (and
+6. **Reconstruction.** `6a` the day's trades as known at `@asof` versus as restated (and
    `6a_by_symbol`), `6b` the trades that changed, `6c` PnL forensics between `@t1` and
    `@t2` whose five columns add up to the total (and `6c_by_symbol`), `6d` booking latency
    by channel (and `6d_by_symbol`). `6e_margin_by_ccp` gross and net notional per book
-   and clearing house (ICE Clear Europe, ECC, CME; voice deals as `BILATERAL`). The as-known and as-restated views differ by one line,
-   `WHERE booked_ts <= @asof`. Late voice bookings are normal desk life (broker median 20
+   and clearing house (ICE Clear Europe, ECC, CME; voice deals as `BILATERAL`). The
+   as-known and as-restated views, `energy_book_asof` and `energy_book_restated`, differ
+   by one line, `WHERE booked_ts <= @asof`. Late voice bookings are normal desk life (broker median 20
    minutes, bilateral two hours), so `6b` lists the three planted cases alongside every
    ordinary voice deal done before `@asof` and booked after it.
 7. **Model validation.** `7a` champion versus challenger (bias, RMSE, share inside the
@@ -422,15 +495,38 @@ drill-down sibling right below them.
 - `ASOF JOIN ... TOLERANCE` over several legs: write each leg as the table with a filter,
   `(energy_quotes WHERE symbol = @x) a ASOF JOIN (energy_quotes WHERE ...) b TOLERANCE 30s`.
   The same join over CTEs takes a slow path and times out on tens of millions of rows.
-- `HORIZON JOIN` wants a plain table on the right. For a derived left side (markouts from
-  deal time rather than booking time) wrap it: `FROM (t TIMESTAMP(ts)) AS t`. Put the
-  time filter on the left side inside the parentheses; a `WHERE` after the join runs
-  after it and the join reads every quote in the table (2.4 s instead of 0.4 s here).
+- `HORIZON JOIN`: give both sides as the table with a time filter inside the
+  parentheses, `FROM (energy_fills WHERE ts IN @demo_day) t HORIZON JOIN (energy_quotes
+  WHERE ts >= ... AND ts < ...) q`. A `WHERE` after the join runs after it and the join
+  reads every quote in the table (2.4 s instead of 0.4 s here). For a derived left side
+  (markouts from deal time rather than booking time) wrap it: `FROM (t TIMESTAMP(ts)) AS t`.
+- Every query carries a time bound, except lookups on the reference tables
+  (`instruments`, `listings`, `limits`, whose rows carry the epoch). The `_asof` views
+  look back a day for marks and an hour for FX; the booking views take the deals done on
+  the day of `@asof` (bounded on `trade_ts`; their `booked_ts >= 00:00` only starts the
+  scan at the day, since a booking never precedes its deal); the `_day` views take one
+  day.
 - Series cells read the 1-minute bars (`quotes_1m`), not ticks: a day-long spread or a
   model-grading pass over 250M quotes takes seconds on ticks and milliseconds on bars,
   and the bar's last quote is the ASOF match with a one-minute tolerance. The bars are
   built from primary-venue quotes only (a `WHERE source IN (...)` in the view), so a bar
   is one venue's price, not a blend of two books with different spreads.
+- Parameterised views (checked on 10.0.1 and 10.0.2 before building on them): a caller's
+  `DECLARE` reaches a view nested inside another view, one `DECLARE` serves every view
+  joined in the query, a cell can compute a variable from another (`@asof :=
+  dateadd('d', 1, @demo_day::timestamp) - 1`), and overriding a variable not declared `OVERRIDABLE` is an error
+  (`variable is not overridable`), which keeps fixed definitions fixed. `EXPLAIN` of a
+  view and of its inline query give the same plan, and `ASOF JOIN` over view legs with a
+  `WHERE symbol = ...` runs as fast as over the table. Dropping the tables marks the views
+  `invalid`; recreating the tables makes them `valid` again with no other step.
+- `EXPLAIN` goes before `DECLARE`: `EXPLAIN DECLARE @asof := ... SELECT * FROM view`.
+- `LATEST ON ... PARTITION BY symbol` with the symbols named (`WHERE symbol IN ('EURUSD',
+  'GBPUSD', 'EURGBP')`) stops at each one's last row; a filter on another column
+  (`curve = 'FX'`) scans back through every row until it has them. That is why
+  `energy_fx_asof` names its pairs and needs no time window.
+- Join on columns, not expressions: `energy_model_graded_day` computes the bar time
+  (`dateadd('m', -1, ts) AS bar_ts`) in a subquery and joins on it, which keeps the join a
+  hash join.
 - `HAVING` is not supported: filter an aggregating CTE in the outer `WHERE`.
 - `IN (SELECT ... FROM cte)` is rejected (the CTE is looked up as a table); filter
   directly or join the CTE.
@@ -447,28 +543,30 @@ drill-down sibling right below them.
 ### Query timings on the scale 1 dataset
 
 Measured with `check.py` on a laptop (QuestDB 10.0.2, 4 October to midday on 8
-October, about 258M quotes), warm:
+October, about 255M quotes), warm:
 
 | Cell | ms | Cell | ms |
 |---|---|---|---|
-| `0a`, `0b`, `0c` | 3 to 17 | `5a_lng_arb_jkm_ttf` | 23 |
-| `0d_listing_lookup` | 25 | `5a_ticks_half_hour` (18k rows) | 112 |
-| `1a_pnl_by_book`, `_by_symbol` | 275 | `5b_gasoil_crack_and_brent_wti` | 5 |
-| `1b` (all three) | 320 to 335 | `5c_clean_spark_zscore` | 23 |
-| `1c_markouts_by_desk` | 1,370 | `5c_ticks_half_hour` (54k rows) | 270 |
-| `1e_markouts_by_venue` | 1,320 | `5d`, `5e` | 9 to 13 |
-| `1d_markouts_by_counterparty` | 15 | `5f_cross_venue_spread` (36k rows) | 128 |
-| `2a` to `2f` | 2 to 7 | `5f_divergence_episodes` | 83 |
-| `3a` to `3e` | 2 to 40 | `6a` to `6d` and siblings | 2 to 76 |
-| `4a`, `4b`, `4c`, `4e` | 3 to 14 | `6e_margin_by_ccp` | 273 |
-| `4d_consistency_history` | 250 | `7a` and siblings, `7b` | 97 to 141 |
+| `0a` to `0e` | 1 to 13 | `5a_lng_arb_jkm_ttf` | 4 |
+| `1a_pnl_by_book`, `_by_symbol` | 4 to 7 | `5a_ticks_half_hour` (18k rows) | 114 |
+| `1b` (all three) | 40 to 64 | `5b`, `5c_clean_spark_zscore` | 5 |
+| `1c_markouts_by_desk` | 1,350 | `5c_ticks_half_hour` (54k rows) | 271 |
+| `1d_markouts_by_counterparty` | 16 | `5d`, `5e` | 8 to 9 |
+| `1e_markouts_by_venue` | 1,310 | `5f_cross_venue_spread` (36k rows) | 125 |
+| `2a` to `2f` | 2 to 6 | `5f_divergence_episodes` | 83 |
+| `3a` to `3e` | 2 to 44 | `6a`, `6b` and siblings | 5 to 7 |
+| `4a`, `4b`, `4c`, `4e` | 2 to 4 | `6c` and `6c_by_symbol` | 49 |
+| `4d_consistency_history` | 238 | `6d`, `6e` | 2 |
+| | | `7a` and siblings, `7b` | 61 to 111 |
 | | | `7c`, `7c_as_corrected`, `7d` | 19 to 40 |
 
 Everything is under 1.5 seconds warm. The slowest are the two markout cells, which join
-every fill to its own venue's raw ticks at six horizons. The first
-run after a load or a restart is slower on the tick-level cells while the quote pages
-come in (here `1c` took 8 to 10 s, `1a` up to 3 s, `1e` about 1.5 s), so run `check.py` once before
-the session. On the cluster expect the same shape with slower cold runs on a gp3 volume.
+every fill to its own venue's raw ticks at six horizons. The PnL and margin cells take a
+few milliseconds: their FX rates come from `energy_fx_asof`, whose `LATEST ON` names the
+three pairs and stops at each one's last tick. The first run after a load or a restart
+is slower on the tick-level cells while the quote pages come in (here `1c` took 8 to 10
+s), so run `check.py` once before the session. On the cluster expect the same shape with
+slower cold runs on a gp3 volume.
 
 ## Simplifications to be upfront about
 

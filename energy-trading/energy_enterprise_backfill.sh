@@ -13,7 +13,10 @@
 #   energy_quotes_1m / _5m / _1d, energy_curve_marks_1h        (materialized views)
 #   energy_positions_live, energy_positions_live_by_venue      (live views, beta)
 #   energy_ledger, energy_curve_marks_latest, energy_trade_events_latest,
-#   energy_tenors, energy_instrument_master                     (views)
+#   energy_tenors, energy_instrument_master, energy_marks_asof, energy_fx_asof,
+#   energy_usd_factor_asof, energy_tenors_asof, energy_book_asof,
+#   energy_book_restated, energy_mid_1m_day, energy_positions_running_day,
+#   energy_model_graded_day, energy_strip_gaps_day              (views)
 #
 # If the cluster already holds energy_ objects from before the listings change
 # (instruments, limits, curve_marks, position_snapshots and quotes_1m all changed
