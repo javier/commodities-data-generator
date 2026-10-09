@@ -1,0 +1,1682 @@
+{
+  "title": "Energy Trading Desk",
+  "uid": "energy-trading-desk",
+  "description": "Synthetic energy trading desk on QuestDB. Every panel is as of the right edge of the time range: leave it at now for the live desk, or drag the end into the past to reconstruct it. All times are UTC, as are the data and the planted storyline.",
+  "tags": [
+    "energy",
+    "questdb",
+    "demo"
+  ],
+  "timezone": "utc",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "5s",
+  "timepicker": {
+    "refresh_intervals": [
+      "250ms",
+      "500ms",
+      "750ms",
+      "1s",
+      "2s",
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m"
+    ]
+  },
+  "graphTooltip": 1,
+  "editable": true,
+  "liveNow": false,
+  "schemaVersion": 39,
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "name": "Planted events",
+        "datasource": {
+          "type": "questdb-questdb-datasource",
+          "uid": "${DS_QUESTDB}"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "#FF9830",
+        "target": {
+          "refId": "Anno",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "rawSql": "SELECT ts AS time, what AS text, act AS tags\nFROM ${prefix}demo_events\nWHERE $__timeFilter(ts)",
+          "format": 1,
+          "queryType": "sql",
+          "editorMode": "code",
+          "rawQuery": true
+        }
+      }
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_QUESTDB",
+        "label": "QuestDB",
+        "type": "datasource",
+        "query": "questdb-questdb-datasource",
+        "refresh": 1,
+        "regex": "",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "options": [],
+        "current": {}
+      },
+      {
+        "name": "prefix",
+        "type": "constant",
+        "hide": 2,
+        "query": "energy_",
+        "label": "prefix",
+        "current": {
+          "text": "energy_",
+          "value": "energy_"
+        },
+        "options": [],
+        "skipUrlSync": false
+      },
+      {
+        "name": "book",
+        "label": "Book",
+        "type": "query",
+        "datasource": {
+          "type": "questdb-questdb-datasource",
+          "uid": "${DS_QUESTDB}"
+        },
+        "definition": "SELECT DISTINCT book FROM ${prefix}limits ORDER BY book",
+        "query": "SELECT DISTINCT book FROM ${prefix}limits ORDER BY book",
+        "refresh": 1,
+        "multi": true,
+        "includeAll": true,
+        "hide": 0,
+        "sort": 0,
+        "regex": "",
+        "options": [],
+        "skipUrlSync": false,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "curve",
+        "label": "Curve",
+        "type": "query",
+        "datasource": {
+          "type": "questdb-questdb-datasource",
+          "uid": "${DS_QUESTDB}"
+        },
+        "definition": "SELECT DISTINCT curve FROM ${prefix}instruments WHERE complex IN ('GAS', 'POWER', 'OIL', 'CARBON') ORDER BY curve",
+        "query": "SELECT DISTINCT curve FROM ${prefix}instruments WHERE complex IN ('GAS', 'POWER', 'OIL', 'CARBON') ORDER BY curve",
+        "refresh": 1,
+        "multi": false,
+        "includeAll": false,
+        "hide": 0,
+        "sort": 0,
+        "regex": "",
+        "options": [],
+        "skipUrlSync": false,
+        "current": {
+          "text": "TTF",
+          "value": "TTF"
+        }
+      },
+      {
+        "name": "curve_unit",
+        "label": "Unit",
+        "type": "query",
+        "datasource": {
+          "type": "questdb-questdb-datasource",
+          "uid": "${DS_QUESTDB}"
+        },
+        "definition": "SELECT CASE WHEN px_factor < 1 THEN 'p/' || unit ELSE ccy || '/' || unit END AS u FROM ${prefix}instruments WHERE curve = '${curve}' LIMIT 1",
+        "query": "SELECT CASE WHEN px_factor < 1 THEN 'p/' || unit ELSE ccy || '/' || unit END AS u FROM ${prefix}instruments WHERE curve = '${curve}' LIMIT 1",
+        "refresh": 1,
+        "multi": false,
+        "includeAll": false,
+        "hide": 2,
+        "sort": 0,
+        "regex": "",
+        "options": [],
+        "skipUrlSync": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Intraday trading PnL by book, USD, with drawdown",
+      "description": "Today's trading PnL per book on the panel interval (10 s and up) to the right edge of the time range: running position and cash from positions_running_day, each bucket's mark and FX rate from the 10-second bars of the primary listing (quotes_10s), so a past bucket keeps its value from one refresh to the next; and the drawdown of the selected books' total over the range. Times are UTC.",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 15,
+        "x": 0,
+        "y": 0
+      },
+      "interval": "10s",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp),\n        @from := '${__from:date:iso}'\nWITH grid AS (\n  SELECT ts, book, symbol, last(pos) AS pos, last(cost) AS cost\n  FROM ${prefix}positions_running_day\n  WHERE ts <= @asof AND book IN (${book:singlequote})\n  SAMPLE BY $__sampleByInterval FILL(PREV)\n),\nmk AS (\n  SELECT ts, symbol, last(close) AS mark\n  FROM ${prefix}quotes_10s\n  WHERE $__timeFilter(ts) AND ts <= @asof\n    AND symbol IN (SELECT DISTINCT symbol FROM ${prefix}fills\n                   WHERE ts >= @day AND ts <= @asof AND book IN (${book:singlequote}))\n  SAMPLE BY $__sampleByInterval FILL(PREV)\n),\nfx AS (\n  SELECT ts, symbol AS fx_symbol, last(close) AS usd\n  FROM ${prefix}quotes_10s\n  WHERE symbol IN ('EURUSD', 'GBPUSD', 'EURGBP') AND $__timeFilter(ts) AND ts <= @asof\n  SAMPLE BY $__sampleByInterval FILL(PREV)\n),\nbase AS (\n  SELECT symbol, price FROM ${prefix}curve_marks\n  WHERE ts <= @from AND ts > dateadd('d', -1, @from::timestamp)\n  LATEST ON ts PARTITION BY symbol\n),\nfx0 AS (\n  SELECT symbol AS fx_symbol, mid(bid, ask) AS usd FROM ${prefix}quotes\n  WHERE symbol IN ('EURUSD', 'GBPUSD', 'EURGBP') AND ts <= @from AND ts > dateadd('h', -1, @from::timestamp)\n  LATEST ON ts PARTITION BY symbol\n),\npnl AS (\n  SELECT g.ts, g.book,\n         sum((g.pos * coalesce(m.mark, b.price) - g.cost) * i.px_factor * coalesce(f.usd, f0.usd, 1.0)) AS pnl_usd\n  FROM grid g\n  LEFT JOIN mk m ON (ts, symbol)\n  LEFT JOIN base b ON b.symbol = g.symbol\n  JOIN ${prefix}instruments i ON i.symbol = g.symbol\n  LEFT JOIN fx f ON f.ts = g.ts AND f.fx_symbol = i.fx_symbol\n  LEFT JOIN fx0 f0 ON f0.fx_symbol = i.fx_symbol\n  GROUP BY g.ts, g.book\n),\nr AS (\n  SELECT ts, book, pnl_usd FROM pnl WHERE $__timeFilter(ts)\n),\ntot AS (\n  SELECT ts, sum(pnl_usd) AS total FROM r GROUP BY ts ORDER BY ts\n),\ndd AS (\n  SELECT ts, total - max(total) OVER (ORDER BY ts) AS drawdown FROM tot\n)\nSELECT ts, book, pnl_usd FROM r\nUNION ALL\nSELECT ts, 'Drawdown, selected books' AS book, drawdown AS pnl_usd FROM dd\nORDER BY ts, book",
+          "format": 1,
+          "queryType": "sql",
+          "editorMode": "code",
+          "rawQuery": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "book"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 1,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "displayName": "${__field.labels.book}",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisLabel": "USD",
+            "axisSoftMin": 0
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*Drawdown.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 25
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    6,
+                    4
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "min"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Front months, live",
+      "description": "The front month of every curve on its primary listing: the latest quote in the ten minutes up to the right edge of the range, the change since the last settlement in the price unit and in percent, and the seconds since that quote. Primary listings only, so the planted EEX feed outage does not show here: the primary keeps ticking.",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 9,
+        "x": 15,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp)\nWITH f AS (\n  SELECT symbol, exchange_symbol, curve FROM ${prefix}tenors_asof WHERE tenor IN ('M1', 'Z1')\n),\nq AS (\n  SELECT symbol, source, bid, ask, ts FROM ${prefix}quotes\n  WHERE ts <= @asof AND ts > dateadd('m', -10, @asof::timestamp)\n  LATEST ON ts PARTITION BY symbol, source\n),\np AS (\n  SELECT q.symbol, q.bid, q.ask, q.ts\n  FROM q JOIN ${prefix}listings l ON l.symbol = q.symbol AND l.exchange = q.source AND l.is_primary\n),\nst AS (\n  SELECT symbol, price FROM ${prefix}settlements\n  WHERE ts < @day AND ts >= dateadd('d', -7, @day)\n  LATEST ON ts PARTITION BY symbol\n)\nSELECT f.symbol, f.exchange_symbol, p.bid, p.ask, mid(p.bid, p.ask) AS mid,\n       mid(p.bid, p.ask) - st.price                    AS change,\n       100 * (mid(p.bid, p.ask) - st.price) / st.price AS change_pct,\n       datediff('T', p.ts::timestamp, @asof::timestamp) / 1000.0 AS age_s\nFROM f\nJOIN p ON (symbol)\nLEFT JOIN st ON (symbol)\nORDER BY f.curve",
+          "format": 1,
+          "queryType": "sql",
+          "editorMode": "code",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "decimals": 3
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "symbol"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Symbol"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "exchange_symbol"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Exchange"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "bid"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Bid"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ask"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Ask"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mid"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Mid"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 122
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "exchange_symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 124
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "bid"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 74
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ask"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 74
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mid"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 74
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "change"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 64
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "change_pct"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 58
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "age_s"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 52
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "change"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Chg"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "change_pct"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Chg %"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "age_s"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Age s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 30
+                    },
+                    {
+                      "color": "red",
+                      "value": 120
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ]
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Positions and limits",
+      "collapsed": false,
+      "id": 100,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "PnL and position blotter, as of the end of the range",
+      "description": "Per book and contract: net position, the live mark at the right edge of the range (the latest primary-listing mid from marks_live, or the curve builder's mark where there is no fresh quote), the opening book revalued from settlement, today's trading and the total, in USD. Reads ledger, marks_live and usd_factor_asof. 1a_pnl_by_book values the same book at the official minute marks (marks_asof).",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 16,
+        "x": 0,
+        "y": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp)\nSELECT l.book, l.symbol, li.exchange_symbol,\n       sum(l.qty)                                                                          AS position,\n       last(m.price)                                                                       AS mark,\n       sum(CASE WHEN l.src = 'sod'   THEN l.qty * (m.price - l.px) * u.factor ELSE 0 END) AS sod_revalued_usd,\n       sum(CASE WHEN l.src = 'trade' THEN l.qty * (m.price - l.px) * u.factor ELSE 0 END) AS todays_trading_usd,\n       sum(l.qty * (m.price - l.px) * u.factor)                                            AS total_pnl_usd\nFROM ${prefix}ledger l\nJOIN ${prefix}marks_live m ON (symbol)\nJOIN ${prefix}usd_factor_asof u ON (symbol)\nJOIN (SELECT symbol, exchange_symbol FROM ${prefix}listings WHERE is_primary) li ON (symbol)\nWHERE l.ts >= @day AND l.ts <= @asof AND l.book IN (${book:singlequote})\nGROUP BY l.book, l.symbol, li.exchange_symbol\nORDER BY l.book, l.symbol",
+          "format": 1,
+          "queryType": "sql",
+          "editorMode": "code",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "book"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Book"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "symbol"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Symbol"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "exchange_symbol"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Exchange symbol"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "book"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 95
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "exchange_symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "position"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Position (delivery units)"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "unit",
+                "value": "locale"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mark"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Mark (price unit)"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sod_revalued_usd"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sod_revalued_usd"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Opening book revalued, USD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "todays_trading_usd"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "todays_trading_usd"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Today's trading, USD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_pnl_usd"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_pnl_usd"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Total PnL, USD"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "footer": {
+          "show": true,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": [
+            "sod_revalued_usd",
+            "todays_trading_usd",
+            "total_pnl_usd"
+          ]
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Limit utilisation, now and intraday peak",
+      "description": "Net position per book and curve against its limit: now (the right edge of the range) and the intraday peak, from the opening snapshot plus every fill since 00:00. The CRUDE / BRENT breach sits at the top. Same numbers as 2a_limits_now_vs_peak.",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 16,
+        "y": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp)\nWITH sod AS (\n  SELECT book, curve, sum(qty) AS qty FROM ${prefix}position_snapshots\n  WHERE ts = @day AND book IN (${book:singlequote})\n  GROUP BY book, curve\n),\ntraded AS (\n  SELECT ts, book, curve, sum(qty) OVER (PARTITION BY book, curve ORDER BY ts) AS traded\n  FROM ${prefix}fills\n  WHERE ts >= @day AND ts <= @asof AND book IN (${book:singlequote})\n),\nrunning AS (\n  SELECT @day AS ts, book, curve, qty AS net_qty FROM sod\n  UNION ALL\n  SELECT t.ts, t.book, t.curve, coalesce(s.qty, 0) + t.traded AS net_qty\n  FROM traded t LEFT JOIN sod s ON (book, curve)\n),\nordered AS (\n  SELECT * FROM running ORDER BY ts\n),\nlim AS (\n  SELECT book, curve, max_abs_qty FROM ${prefix}limits\n  LATEST ON ts PARTITION BY book, curve\n)\nSELECT r.book, r.curve,\n       100 * abs(last(r.net_qty)) / l.max_abs_qty AS pct_now,\n       100 * max(abs(r.net_qty)) / l.max_abs_qty  AS pct_peak\nFROM ordered r\nJOIN lim l ON (book, curve)\nGROUP BY r.book, r.curve, l.max_abs_qty\nORDER BY pct_peak DESC",
+          "format": 1,
+          "queryType": "sql",
+          "editorMode": "code",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "book"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Book"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "curve"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Curve"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "pct_now"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Now, % of limit"
+              },
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 150
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 80
+                    },
+                    {
+                      "color": "red",
+                      "value": 100
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "pct_peak"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Peak, % of limit"
+              },
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 150
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "#EAB839",
+                      "value": 80
+                    },
+                    {
+                      "color": "red",
+                      "value": 100
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ]
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Curves",
+      "collapsed": false,
+      "id": 101,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      }
+    },
+    {
+      "id": 4,
+      "type": "status-history",
+      "title": "Curve evolution, ${curve}: change since the start of the range, %",
+      "description": "Every tenor of the selected curve, front to back (months, then quarters, seasons and cals), on the panel interval (10 s and up): the last primary-listing mid of each bucket (quotes_10s) against the curve builder's mark at the start of the range, in percent. Grey is within 0.25% (0.125% for oil curves); the settlement comparison is the panel to the right.",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "gridPos": {
+        "h": 15,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "interval": "10s",
+      "maxDataPoints": 200,
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "rawSql": "DECLARE @asof := '${__to:date:iso}', @from := '${__from:date:iso}'\nWITH g AS (\n  SELECT symbol, tenor, tenor_n,\n         CASE WHEN granularity IN ('M', 'Z') THEN 1 WHEN granularity = 'Q' THEN 2\n              WHEN granularity = 'S' THEN 3 ELSE 4 END AS g_order\n  FROM ${prefix}tenors_asof\n  WHERE curve = '${curve}'\n    AND ((granularity IN ('M', 'Z') AND tenor_n <= 24) OR (granularity = 'Q' AND tenor_n <= 8)\n         OR (granularity = 'S' AND tenor_n <= 4) OR (granularity = 'Y' AND tenor_n <= 3))\n),\nt AS (\n  SELECT symbol, tenor, row_number() OVER (ORDER BY g_order, tenor_n) AS rk FROM g\n),\nbase AS (\n  SELECT symbol, price FROM ${prefix}curve_marks\n  WHERE curve = '${curve}' AND ts <= @from AND ts > dateadd('d', -1, @from::timestamp)\n  LATEST ON ts PARTITION BY symbol\n),\nmk AS (\n  SELECT ts, symbol, last(close) AS price\n  FROM ${prefix}quotes_10s\n  WHERE curve = '${curve}' AND $__timeFilter(ts) AND ts <= @asof\n  SAMPLE BY $__sampleByInterval FILL(PREV)\n)\nSELECT mk.ts, lpad(t.rk::string, 2, '0') || ' ' || t.tenor AS tenor,\n       100 * (coalesce(mk.price, b.price) - b.price) / b.price AS change_pct\nFROM mk\nJOIN t ON (symbol)\nJOIN base b ON (symbol)\nWHERE '${curve}' NOT IN ('BRENT', 'WTI', 'GASOIL')\nORDER BY mk.ts, t.rk",
+          "format": 1,
+          "queryType": "sql",
+          "editorMode": "code",
+          "rawQuery": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "rawSql": "DECLARE @asof := '${__to:date:iso}', @from := '${__from:date:iso}'\nWITH g AS (\n  SELECT symbol, tenor, tenor_n,\n         CASE WHEN granularity IN ('M', 'Z') THEN 1 WHEN granularity = 'Q' THEN 2\n              WHEN granularity = 'S' THEN 3 ELSE 4 END AS g_order\n  FROM ${prefix}tenors_asof\n  WHERE curve = '${curve}'\n    AND ((granularity IN ('M', 'Z') AND tenor_n <= 24) OR (granularity = 'Q' AND tenor_n <= 8)\n         OR (granularity = 'S' AND tenor_n <= 4) OR (granularity = 'Y' AND tenor_n <= 3))\n),\nt AS (\n  SELECT symbol, tenor, row_number() OVER (ORDER BY g_order, tenor_n) AS rk FROM g\n),\nbase AS (\n  SELECT symbol, price FROM ${prefix}curve_marks\n  WHERE curve = '${curve}' AND ts <= @from AND ts > dateadd('d', -1, @from::timestamp)\n  LATEST ON ts PARTITION BY symbol\n),\nmk AS (\n  SELECT ts, symbol, last(close) AS price\n  FROM ${prefix}quotes_10s\n  WHERE curve = '${curve}' AND $__timeFilter(ts) AND ts <= @asof\n  SAMPLE BY $__sampleByInterval FILL(PREV)\n)\nSELECT mk.ts, lpad(t.rk::string, 2, '0') || ' ' || t.tenor AS tenor,\n       100 * (coalesce(mk.price, b.price) - b.price) / b.price AS change_pct\nFROM mk\nJOIN t ON (symbol)\nJOIN base b ON (symbol)\nWHERE '${curve}' IN ('BRENT', 'WTI', 'GASOIL')\nORDER BY mk.ts, t.rk",
+          "format": 1,
+          "queryType": "sql",
+          "editorMode": "code",
+          "rawQuery": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "tenor"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "color": {
+            "mode": "thresholds"
+          },
+          "displayName": "${__field.labels.tenor}",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#C4162A",
+                "value": null
+              },
+              {
+                "color": "#E02F44",
+                "value": -2.0
+              },
+              {
+                "color": "#FF7383",
+                "value": -1.0
+              },
+              {
+                "color": "#FFB3BC",
+                "value": -0.5
+              },
+              {
+                "color": "#4D4D4D",
+                "value": -0.25
+              },
+              {
+                "color": "#B5E5AE",
+                "value": 0.25
+              },
+              {
+                "color": "#73BF69",
+                "value": 0.5
+              },
+              {
+                "color": "#37872D",
+                "value": 1.0
+              },
+              {
+                "color": "#19730E",
+                "value": 2.0
+              }
+            ]
+          },
+          "custom": {
+            "fillOpacity": 90,
+            "lineWidth": 0
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "#C4162A",
+                      "value": null
+                    },
+                    {
+                      "color": "#E02F44",
+                      "value": -1.0
+                    },
+                    {
+                      "color": "#FF7383",
+                      "value": -0.5
+                    },
+                    {
+                      "color": "#FFB3BC",
+                      "value": -0.25
+                    },
+                    {
+                      "color": "#4D4D4D",
+                      "value": -0.125
+                    },
+                    {
+                      "color": "#B5E5AE",
+                      "value": 0.125
+                    },
+                    {
+                      "color": "#73BF69",
+                      "value": 0.25
+                    },
+                    {
+                      "color": "#37872D",
+                      "value": 0.5
+                    },
+                    {
+                      "color": "#19730E",
+                      "value": 1.0
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showValue": "never",
+        "rowHeight": 0.95,
+        "colWidth": 1,
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "trend",
+      "title": "Live curve versus last settlement, ${curve} (${curve_unit})",
+      "description": "The month curve by delivery month: the live mark at the right edge of the range (marks_live: the latest primary-listing mid, or the curve builder's mark where there is no fresh quote) and the last official settlement before that day. The X axis is the delivery calendar.",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "gridPos": {
+        "h": 15,
+        "w": 12,
+        "x": 12,
+        "y": 23
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp)\nSELECT t.delivery_start::long / 1000 AS delivery, t.tenor,\n       m.price AS mark_asof, s.price AS last_settlement\nFROM ${prefix}marks_live m\nJOIN ${prefix}tenors_asof t ON (symbol)\nLEFT JOIN (SELECT symbol, price FROM ${prefix}settlements\n           WHERE curve = '${curve}' AND ts < @day AND ts >= dateadd('d', -7, @day)\n           LATEST ON ts PARTITION BY symbol) s ON (symbol)\nWHERE m.curve = '${curve}' AND t.granularity IN ('M', 'Z')\nORDER BY t.delivery_start",
+          "format": 1,
+          "queryType": "sql",
+          "editorMode": "code",
+          "rawQuery": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "tenor": true
+            },
+            "renameByName": {
+              "mark_asof": "Mark as of range end",
+              "last_settlement": "Last settlement"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 3,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "showPoints": "always",
+            "pointSize": 5,
+            "axisLabel": "${curve_unit}"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "delivery"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:MMM YY"
+              },
+              {
+                "id": "custom.axisLabel",
+                "value": "Delivery month"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last settlement"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    6,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#8AB8FF"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "xField": "delivery",
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Reconstruction",
+      "collapsed": false,
+      "id": 102,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Book as known versus as restated, USD",
+      "description": "The value of the day's deals at the marks of the range end: as the booking log showed it at each minute (as known: book_asof at that instant), and with every deal at its final version as known at the range end (as restated). The gap is purely bookings; the lines meet at the right edge and part at each late booking, amendment and cancel.",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 39
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp)\nWITH ev AS (\n  SELECT e.booked_ts, e.trade_ts, e.trade_id, e.version,\n         CASE WHEN e.status = 'CANCELLED' THEN 0.0\n              ELSE e.qty * (m.price - e.px) * u.factor END AS value_usd\n  FROM ${prefix}trade_events e\n  JOIN ${prefix}marks_asof m ON (symbol)\n  JOIN ${prefix}usd_factor_asof u ON (symbol)\n  WHERE e.booked_ts >= @day AND e.booked_ts <= @asof\n    AND e.trade_ts >= @day AND e.trade_ts <= @asof\n    AND e.book IN (${book:singlequote})\n),\nsteps AS (\n  SELECT booked_ts AS ts,\n         value_usd - coalesce(lag(value_usd) OVER (PARTITION BY trade_id ORDER BY booked_ts, version), 0.0) AS delta\n  FROM ev\n  UNION ALL SELECT @day AS ts, 0.0 AS delta FROM long_sequence(1)\n  UNION ALL SELECT @asof::timestamp AS ts, 0.0 AS delta FROM long_sequence(1)\n),\nknown AS (\n  SELECT ts, sum(delta) OVER (ORDER BY ts) AS v FROM steps ORDER BY ts\n)\nSELECT * FROM (\n  SELECT ts, last(v) AS \"Book as known\"\n  FROM (known TIMESTAMP(ts))\n  SAMPLE BY 1m FILL(PREV)\n) WHERE $__timeFilter(ts)",
+          "format": 1,
+          "queryType": "sql",
+          "editorMode": "code",
+          "rawQuery": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "rawSql": "DECLARE @asof := '${__to:date:iso}',\n        @day  := timestamp_floor('d', '${__to:date:iso}'::timestamp)\nWITH ev AS (\n  SELECT e.booked_ts, e.trade_ts, e.trade_id, e.version,\n         CASE WHEN e.status = 'CANCELLED' THEN 0.0\n              ELSE e.qty * (m.price - e.px) * u.factor END AS value_usd\n  FROM ${prefix}trade_events e\n  JOIN ${prefix}marks_asof m ON (symbol)\n  JOIN ${prefix}usd_factor_asof u ON (symbol)\n  WHERE e.booked_ts >= @day AND e.booked_ts <= @asof\n    AND e.trade_ts >= @day AND e.trade_ts <= @asof\n    AND e.book IN (${book:singlequote})\n),\nfin AS (\n  SELECT trade_ts AS ts, value_usd FROM (\n    SELECT trade_ts, value_usd,\n           row_number() OVER (PARTITION BY trade_id ORDER BY booked_ts DESC, version DESC) AS rn\n    FROM ev)\n  WHERE rn = 1\n  UNION ALL SELECT @day AS ts, 0.0 AS value_usd FROM long_sequence(1)\n  UNION ALL SELECT @asof::timestamp AS ts, 0.0 AS value_usd FROM long_sequence(1)\n),\nrestated AS (\n  SELECT ts, sum(value_usd) OVER (ORDER BY ts) AS v FROM fin ORDER BY ts\n)\nSELECT * FROM (\n  SELECT ts, last(v) AS \"Book as restated\"\n  FROM (restated TIMESTAMP(ts))\n  SAMPLE BY 1m FILL(PREV)\n) WHERE $__timeFilter(ts)",
+          "format": 1,
+          "queryType": "sql",
+          "editorMode": "code",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 1,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "showPoints": "never",
+            "lineInterpolation": "stepAfter",
+            "axisLabel": "USD"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Book as restated"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#FF9830"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Book as known"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#8AB8FF"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "barchart",
+      "title": "PnL explain across the time range, USD",
+      "description": "Why the value of the day's deals changed across the range: market move on the opening positions, new trades, late bookings, amendments and cancellations. The five add up to the total. Same decomposition as 6c_pnl_forensics_t1_to_t2 with @t1 and @t2 at the range edges.",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "${DS_QUESTDB}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 39
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "${DS_QUESTDB}"
+          },
+          "rawSql": "DECLARE @t1 := '${__from:date:iso}', @t2 := '${__to:date:iso}'\nWITH b1 AS (\n  (SELECT * FROM ${prefix}trade_events\n   WHERE booked_ts >= timestamp_floor('d', @t1::timestamp) AND booked_ts <= @t1\n   LATEST ON booked_ts PARTITION BY trade_id)\n  WHERE status != 'CANCELLED' AND trade_ts >= timestamp_floor('d', @t1::timestamp) AND trade_ts <= @t1\n    AND book IN (${book:singlequote})\n),\nb2 AS (\n  (SELECT * FROM ${prefix}trade_events\n   WHERE booked_ts >= timestamp_floor('d', @t1::timestamp) AND booked_ts <= @t2\n   LATEST ON booked_ts PARTITION BY trade_id)\n  WHERE status != 'CANCELLED' AND trade_ts >= timestamp_floor('d', @t1::timestamp) AND trade_ts <= @t2\n    AND book IN (${book:singlequote})\n),\nboth AS (\n  SELECT coalesce(b1.symbol, b2.symbol) AS symbol,\n         b1.qty AS q1, b1.px AS p1, b2.qty AS q2, b2.px AS p2, b2.trade_ts AS ts2\n  FROM b1 FULL JOIN b2 ON b1.trade_id = b2.trade_id\n),\nm1 AS (SELECT symbol, price FROM ${prefix}curve_marks WHERE ts <= @t1 AND ts > dateadd('m', -5, @t1) LATEST ON ts PARTITION BY symbol),\nm2 AS (SELECT symbol, price FROM ${prefix}curve_marks WHERE ts <= @t2 AND ts > dateadd('m', -5, @t2) LATEST ON ts PARTITION BY symbol),\nf1 AS (SELECT symbol, mid(bid, ask) AS usd FROM ${prefix}quotes\n       WHERE symbol IN ('EURUSD', 'GBPUSD', 'EURGBP') AND ts <= @t1 AND ts > dateadd('h', -1, @t1) LATEST ON ts PARTITION BY symbol),\nf2 AS (SELECT symbol, mid(bid, ask) AS usd FROM ${prefix}quotes\n       WHERE symbol IN ('EURUSD', 'GBPUSD', 'EURGBP') AND ts <= @t2 AND ts > dateadd('h', -1, @t2) LATEST ON ts PARTITION BY symbol),\nx AS (\n  SELECT t.q1, t.p1, t.q2, t.p2, t.ts2, a.price AS m1, b.price AS m2,\n         c.px_factor * coalesce(u1.usd, 1.0) AS k1, c.px_factor * coalesce(u2.usd, 1.0) AS k2\n  FROM both t\n  JOIN m1 a ON a.symbol = t.symbol\n  JOIN m2 b ON b.symbol = t.symbol\n  JOIN ${prefix}instruments c ON c.symbol = t.symbol\n  LEFT JOIN f1 u1 ON u1.symbol = c.fx_symbol\n  LEFT JOIN f2 u2 ON u2.symbol = c.fx_symbol\n),\ns AS (\n  SELECT sum(CASE WHEN q1 IS NOT NULL THEN q1 * ((m2 - p1) * k2 - (m1 - p1) * k1) ELSE 0 END)                       AS market_move,\n         sum(CASE WHEN q1 IS NULL AND ts2 > @t1 THEN q2 * (m2 - p2) * k2 ELSE 0 END)                              AS new_trades,\n         sum(CASE WHEN q1 IS NULL AND ts2 <= @t1 THEN q2 * (m2 - p2) * k2 ELSE 0 END)                             AS late_bookings,\n         sum(CASE WHEN q1 IS NOT NULL AND q2 IS NOT NULL THEN (q2 * (m2 - p2) - q1 * (m2 - p1)) * k2 ELSE 0 END)  AS amendments,\n         sum(CASE WHEN q2 IS NULL THEN -q1 * (m2 - p1) * k2 ELSE 0 END)                                           AS cancellations,\n         sum(CASE WHEN q2 IS NOT NULL THEN q2 * (m2 - p2) * k2 ELSE 0 END)\n           - sum(CASE WHEN q1 IS NOT NULL THEN q1 * (m1 - p1) * k1 ELSE 0 END)                                    AS total\n  FROM x\n)\nSELECT 'Market move' AS component, market_move AS usd FROM s\nUNION ALL SELECT 'New trades', new_trades FROM s\nUNION ALL SELECT 'Late bookings', late_bookings FROM s\nUNION ALL SELECT 'Amendments', amendments FROM s\nUNION ALL SELECT 'Cancellations', cancellations FROM s\nUNION ALL SELECT 'Total', total FROM s",
+          "format": 1,
+          "queryType": "sql",
+          "editorMode": "code",
+          "rawQuery": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0,
+            "axisLabel": "USD"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "xField": "component",
+        "showValue": "always",
+        "barWidth": 0.7,
+        "colorByField": "usd",
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        },
+        "xTickLabelRotation": 0
+      }
+    }
+  ]
+}

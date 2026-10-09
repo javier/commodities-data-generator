@@ -1,0 +1,1521 @@
+-- =====================================================================================
+-- Energy trading desk: real-time analytics on QuestDB
+-- Seven acts, one cell per analytic, each cell self-contained. Run everything with
+-- check.py, or paste cells into the Web Console.
+--
+-- Variables are DECLAREd at the top of each cell. Every value written as
+-- @name := '...' (demo day, planted-event timestamps, front-month symbols) is
+-- rewritten by energy_trading_data_generator.py after each backfill, so the pack
+-- always points at the data that was just loaded. In a Web Console notebook you
+-- can define them once as notebook variables and delete the DECLARE lines.
+--
+-- Table names carry the generator's default --prefix (energy_). A different prefix
+-- means a search and replace on "energy_".
+--
+-- An instrument (symbol, the desk's readable id: TTF_Jan-27) is the risk object: one
+-- fair value, one position for risk and PnL. A listing is where it trades: TTF_Jan-27
+-- is TFM FMF0027 on ICE Endex and G3BM 2027-01 on EEX, same risk, two clearing houses.
+-- Fills carry the listing as (symbol, venue), quotes as (symbol, source). Cells at
+-- instrument grain show the primary listing's exchange_symbol.
+-- Tenor is relative: M1 is the front month today, Q1 the first listed quarter, Z1
+-- the first carbon December. The energy_tenors view computes it at query time, so it
+-- rolls; cells about a past instant compute it as of @asof instead.
+--
+-- The shared definitions are plain views the generator creates with the tables: the
+-- latest mark, FX rate and USD factor, the tenors and the booking log as of @asof
+-- (marks_asof, fx_asof, usd_factor_asof, tenors_asof, book_asof, book_restated), and
+-- one day's bars, running positions, model grading and strip gaps for @day
+-- (mid_1m_day, positions_running_day, model_graded_day, strip_gaps_day). A cell sets
+-- @asof or @day in its own DECLARE and every view it touches follows; cells about the
+-- demo day as a whole set @asof to its last instant. Each note names the views a cell
+-- stands on; 0e lists them all.
+--
+-- Presenter notes sit above each cell: what it shows, what to say, which planted
+-- event it reveals. Cell 0a lists the planted events; keep it open. Cells ending in
+-- _by_symbol are the one-click drill-down of the book-level cell above them.
+-- =====================================================================================
+
+
+-- @@ 0a_planted_events
+-- The presenter's cheat sheet: what the generator planted and when.
+DECLARE @demo_day := '2026-10-07'
+SELECT ts, act, what FROM energy_demo_events
+WHERE ts >= dateadd('d', -2, @demo_day::timestamp)
+ORDER BY ts;
+
+-- @@ 0b_volumes_today
+-- How much data the demo day carries per table.
+DECLARE @demo_day := '2026-10-07'
+SELECT 'quotes' AS table_name, count() AS rows_today FROM energy_quotes WHERE ts IN @demo_day
+UNION ALL SELECT 'curve_marks', count() FROM energy_curve_marks WHERE ts IN @demo_day
+UNION ALL SELECT 'fills', count() FROM energy_fills WHERE ts IN @demo_day
+UNION ALL SELECT 'trade_events', count() FROM energy_trade_events WHERE booked_ts IN @demo_day
+UNION ALL SELECT 'model_prices', count() FROM energy_model_prices WHERE ts IN @demo_day
+UNION ALL SELECT 'iv_marks', count() FROM energy_iv_marks WHERE ts IN @demo_day
+UNION ALL SELECT 'da_prices', count() FROM energy_da_prices WHERE ts IN @demo_day
+UNION ALL SELECT 'position_snapshots', count() FROM energy_position_snapshots WHERE ts IN @demo_day;
+
+-- @@ 0c_instrument_master
+-- The instrument master, one row per listing: every unexpired contract with its
+-- relative tenor and every venue it trades on, with the exchange's own symbol, the
+-- clearing house, lot and tick, and the expected share of the desk's screen fills.
+-- TTF, EUA and UK power are dual-listed (ICE and EEX); everything else trades in one place.
+SELECT curve, tenor, symbol, exchange, exchange_symbol, ccp, lot_size, tick_size,
+       is_primary, liquidity_share, mic, exchange_code, exchange_physical_code,
+       delivery_start, expiry, unit, ccy
+FROM energy_instrument_master
+ORDER BY curve, granularity, tenor_n, is_primary DESC;
+
+-- @@ 0d_listing_lookup
+-- "What is this exchange code?" Paste any exchange symbol into @exchange_symbol: the
+-- listing it belongs to, the instrument behind it, and that venue's latest quote today.
+-- The quote filter names the one listing before touching the ticks, and LIMIT -1 takes
+-- the last row in time order, so the lookup reads a handful of rows, not the day.
+DECLARE @demo_day := '2026-10-07', @exchange_symbol := 'G3BM 2026-11'
+WITH l AS (
+  SELECT symbol, exchange, exchange_symbol, ccp, lot_size, is_primary FROM energy_listings
+  WHERE exchange_symbol = @exchange_symbol
+),
+last_q AS (
+  SELECT symbol, source, ts, bid, ask, bid_size, ask_size FROM energy_quotes
+  WHERE ts IN @demo_day
+    AND symbol IN (SELECT symbol FROM energy_listings WHERE exchange_symbol = @exchange_symbol)
+    AND source IN (SELECT exchange FROM energy_listings WHERE exchange_symbol = @exchange_symbol)
+  LIMIT -1
+)
+SELECT l.exchange_symbol, l.symbol, l.exchange, l.ccp, l.is_primary, l.lot_size,
+       q.ts AS last_quote_ts, q.bid, q.ask, q.bid_size, q.ask_size
+FROM l
+JOIN last_q q ON q.symbol = l.symbol AND q.source = l.exchange;
+
+-- @@ 0e_definitions
+-- The definitions every cell stands on, each in one place: the parameterised views.
+-- The *_asof views take @asof (default now()), the *_day views take @day (default
+-- today()); a cell sets them with its own DECLARE. Say: SHOW CREATE VIEW
+-- energy_book_asof and SHOW CREATE VIEW energy_book_restated are the two definitions
+-- the whole reconstruction rests on, and they differ by one line.
+SELECT view_name, view_status FROM views() WHERE view_name LIKE 'energy_%' ORDER BY view_name;
+
+-- =====================================================================================
+-- ACT 1 · INTRADAY PnL
+-- PnL since the close = the opening book revalued from yesterday's settlement, plus
+-- today's fills marked from their execution price. The ledger view rewrites the EOD
+-- snapshot as a pseudo-fill at settlement, so every row contributes qty * (mark - px)
+-- and any breakdown is a GROUP BY. Converted to USD at the latest FX quote.
+-- =====================================================================================
+
+-- @@ 1a_pnl_by_book
+-- Say: one query, one convention, every book. Marks are the curve builder's latest
+-- price (liquid or interpolated), FX is the latest tick, px_factor turns pence into pounds.
+-- Views: ledger, marks_asof, usd_factor_asof, at the last instant of the demo day.
+DECLARE @demo_day := '2026-10-07', @asof := dateadd('d', 1, @demo_day::timestamp) - 1
+WITH pnl AS (
+  SELECT l.book,
+         sum(CASE WHEN l.src = 'sod'   THEN l.qty * (m.price - l.px) * u.factor ELSE 0 END) AS sod_revalued,
+         sum(CASE WHEN l.src = 'trade' THEN l.qty * (m.price - l.px) * u.factor ELSE 0 END) AS todays_trading,
+         sum(CASE WHEN l.src = 'trade' THEN 1 ELSE 0 END) AS fills
+  FROM energy_ledger l
+  JOIN energy_marks_asof m ON (symbol)
+  JOIN energy_usd_factor_asof u ON (symbol)
+  WHERE l.ts IN @demo_day
+  GROUP BY l.book
+)
+SELECT book,
+       round(sod_revalued)::decimal(14,0)                   AS sod_book_revalued_usd,
+       round(todays_trading)::decimal(14,0)                 AS todays_trading_usd,
+       round(sod_revalued + todays_trading)::decimal(14,0)  AS total_pnl_usd,
+       fills
+FROM pnl
+ORDER BY book;
+
+-- @@ 1a_pnl_by_book_by_symbol
+-- Drill-down of 1a: the same PnL per book and contract, with the relative tenor and
+-- the net position, largest contributors first within each book.
+-- Views: ledger, marks_asof, usd_factor_asof, tenors.
+DECLARE @demo_day := '2026-10-07', @asof := dateadd('d', 1, @demo_day::timestamp) - 1
+WITH pnl AS (
+  SELECT l.book, l.symbol,
+         sum(l.qty) AS net_qty,
+         sum(CASE WHEN l.src = 'sod'   THEN l.qty * (m.price - l.px) * u.factor ELSE 0 END) AS sod_revalued,
+         sum(CASE WHEN l.src = 'trade' THEN l.qty * (m.price - l.px) * u.factor ELSE 0 END) AS todays_trading,
+         sum(CASE WHEN l.src = 'trade' THEN 1 ELSE 0 END) AS fills
+  FROM energy_ledger l
+  JOIN energy_marks_asof m ON (symbol)
+  JOIN energy_usd_factor_asof u ON (symbol)
+  WHERE l.ts IN @demo_day
+  GROUP BY l.book, l.symbol
+)
+SELECT p.book, p.symbol, t.tenor, t.exchange_symbol,
+       round(p.net_qty)::decimal(16,0)                          AS net_qty,
+       round(p.sod_revalued)::decimal(14,0)                     AS sod_book_revalued_usd,
+       round(p.todays_trading)::decimal(14,0)                   AS todays_trading_usd,
+       round(p.sod_revalued + p.todays_trading)::decimal(14,0)  AS total_pnl_usd,
+       p.fills
+FROM pnl p
+LEFT JOIN energy_tenors t ON (symbol)
+ORDER BY p.book, abs(p.sod_revalued + p.todays_trading) DESC;
+
+-- @@ 1b_pnl_curve_and_drawdown
+-- Chart: x = ts, y = pnl_usd, one series per book. Position and cash come from the
+-- live view (running sums maintained per fill, reset at 00:00), marks from the
+-- 5-minute bars. Today's trading only; the opening book is in 1a.
+-- Live views are beta in QuestDB 10: 1b_twin_window_function is the same cell over fills.
+-- Views: positions_live (live view), usd_factor_asof.
+DECLARE @demo_day := '2026-10-07', @asof := dateadd('d', 1, @demo_day::timestamp) - 1
+WITH pos AS (
+  SELECT ts, book, symbol, last(pos) AS pos, last(cost) AS cost
+  FROM energy_positions_live
+  WHERE ts IN @demo_day
+  SAMPLE BY 5m FILL(PREV)
+),
+mk AS (
+  SELECT ts, symbol, last(close) AS mark
+  FROM energy_quotes_5m
+  WHERE ts IN @demo_day
+  SAMPLE BY 5m FILL(PREV)
+),
+pnl AS (
+  SELECT p.ts, p.book, sum((p.pos * m.mark - p.cost) * u.factor) AS pnl_usd
+  FROM pos p
+  JOIN mk m ON (ts, symbol)
+  JOIN energy_usd_factor_asof u ON (symbol)
+  GROUP BY p.ts, p.book
+),
+dd AS (
+  SELECT ts, book, pnl_usd, max(pnl_usd) OVER (PARTITION BY book ORDER BY ts) - pnl_usd AS drawdown
+  FROM pnl
+)
+SELECT ts, book, round(pnl_usd)::decimal(14,0) AS pnl_usd, round(drawdown)::decimal(14,0) AS drawdown_usd
+FROM dd
+ORDER BY ts, book;
+
+-- @@ 1b_twin_window_function
+-- The same curve without the live view: running position and cash as window functions
+-- over fills, computed at query time instead of at ingestion time. Identical output.
+-- Views: positions_running_day, usd_factor_asof.
+DECLARE @demo_day := '2026-10-07', @day := @demo_day, @asof := dateadd('d', 1, @demo_day::timestamp) - 1
+WITH pos AS (
+  SELECT ts, book, symbol, last(pos) AS pos, last(cost) AS cost
+  FROM energy_positions_running_day
+  SAMPLE BY 5m FILL(PREV)
+),
+mk AS (
+  SELECT ts, symbol, last(close) AS mark
+  FROM energy_quotes_5m
+  WHERE ts IN @demo_day
+  SAMPLE BY 5m FILL(PREV)
+),
+pnl AS (
+  SELECT p.ts, p.book, sum((p.pos * m.mark - p.cost) * u.factor) AS pnl_usd
+  FROM pos p
+  JOIN mk m ON (ts, symbol)
+  JOIN energy_usd_factor_asof u ON (symbol)
+  GROUP BY p.ts, p.book
+),
+dd AS (
+  SELECT ts, book, pnl_usd, max(pnl_usd) OVER (PARTITION BY book ORDER BY ts) - pnl_usd AS drawdown
+  FROM pnl
+)
+SELECT ts, book, round(pnl_usd)::decimal(14,0) AS pnl_usd, round(drawdown)::decimal(14,0) AS drawdown_usd
+FROM dd
+ORDER BY ts, book;
+
+-- @@ 1b_pnl_curve_by_symbol
+-- Drill-down of 1b: today's trading PnL per book and contract on the same 5-minute
+-- grid (one series per contract). Built on the window-function twin, so it does not
+-- depend on the live view.
+-- Views: positions_running_day, usd_factor_asof, tenors.
+DECLARE @demo_day := '2026-10-07', @day := @demo_day, @asof := dateadd('d', 1, @demo_day::timestamp) - 1
+WITH pos AS (
+  SELECT ts, book, symbol, last(pos) AS pos, last(cost) AS cost
+  FROM energy_positions_running_day
+  SAMPLE BY 5m FILL(PREV)
+),
+mk AS (
+  SELECT ts, symbol, last(close) AS mark
+  FROM energy_quotes_5m
+  WHERE ts IN @demo_day
+  SAMPLE BY 5m FILL(PREV)
+)
+SELECT p.ts, p.book, p.symbol, t.tenor,
+       round((p.pos * m.mark - p.cost) * u.factor)::decimal(14,0) AS pnl_usd
+FROM pos p
+JOIN mk m ON (ts, symbol)
+JOIN energy_usd_factor_asof u ON (symbol)
+LEFT JOIN energy_tenors t ON t.symbol = p.symbol
+ORDER BY p.ts, p.book, p.symbol;
+
+-- @@ 1c_markouts_by_desk
+-- Execution quality: how the mid moved after each fill, in bps, at fixed horizons.
+-- HORIZON JOIN pairs every fill with the prevailing quote at t+0, t+1s, ... t+15m.
+-- CRUDE's markout rises with the horizon (it trades with a view); PRODUCTS always
+-- crosses the spread and never earns it back, so it sits flat and negative.
+-- Each fill is marked out against the quote on the venue it was done on.
+-- Both sides are the table with a time filter inside the parentheses: the fills of the
+-- day and the quotes the horizons can reach. A WHERE after the join is applied after
+-- it and makes the join read every quote in the table.
+DECLARE @demo_day := '2026-10-07'
+SELECT h.offset / 1000000 AS horizon_s,
+       t.book,
+       count() AS fills,
+       round(avg(10000 * CASE WHEN t.qty > 0 THEN 1 ELSE -1 END * (mid(q.bid, q.ask) - t.px) / t.px), 2)::decimal(8,2) AS markout_bps
+FROM (energy_fills WHERE ts IN @demo_day) AS t
+HORIZON JOIN (energy_quotes WHERE ts >= @demo_day::timestamp AND ts < dateadd('m', 16, dateadd('d', 1, @demo_day::timestamp))) AS q
+  ON (t.symbol = q.symbol AND t.venue = q.source)
+LIST (0, 1s, 10s, 1m, 5m, 15m) AS h
+ORDER BY t.book, horizon_s;
+
+-- @@ 1d_markouts_by_counterparty
+-- Who adversely selects us: the same markout on broker and bilateral deals, by
+-- counterparty type, from the deal time (trade_ts), over the last three days. Banks and
+-- trading houses tend to be on the right side; utilities and industrials are not.
+-- Voice deals are timed to the minute, so the horizons run from one minute to four
+-- hours against the 1-minute bars (last quote of the bar), which keeps the join cheap.
+DECLARE @demo_day := '2026-10-07'
+WITH t AS (
+  (SELECT trade_ts AS ts, symbol, qty, px, counterparty
+   FROM energy_trade_events
+   WHERE version = 1 AND channel != 'EXCH'
+     AND booked_ts >= dateadd('d', -2, @demo_day::timestamp) AND trade_ts >= dateadd('d', -2, @demo_day::timestamp))
+  ORDER BY ts
+)
+SELECT h.offset / 60000000 AS horizon_min,
+       regexp_replace(t.counterparty, '_.*$', '') AS counterparty_type,
+       count() AS deals,
+       round(avg(10000 * CASE WHEN t.qty > 0 THEN 1 ELSE -1 END * (mid(q.last_bid, q.last_ask) - t.px) / t.px), 2)::decimal(8,2) AS markout_bps
+FROM (t TIMESTAMP(ts)) AS t
+HORIZON JOIN (energy_quotes_1m WHERE ts >= dateadd('d', -2, @demo_day::timestamp)) AS q ON (symbol)
+LIST (1m, 5m, 15m, 1h, 4h) AS h
+ORDER BY counterparty_type, horizon_min;
+
+
+-- @@ 1e_markouts_by_venue
+-- The 1c markout split by venue for the dual-listed curves (TTF, EUA, UK power).
+-- The secondary venue starts further underwater at horizon 0, because it pays a wider
+-- spread, and otherwise behaves like the primary: same instrument, same risk.
+DECLARE @demo_day := '2026-10-07'
+SELECT h.offset / 1000000 AS horizon_s,
+       t.curve,
+       t.venue,
+       count() AS fills,
+       round(avg(10000 * CASE WHEN t.qty > 0 THEN 1 ELSE -1 END * (mid(q.bid, q.ask) - t.px) / t.px), 2)::decimal(8,2) AS markout_bps
+FROM (energy_fills WHERE ts IN @demo_day AND curve IN ('TTF', 'EUA', 'UKPWR')) AS t
+HORIZON JOIN (energy_quotes WHERE ts >= @demo_day::timestamp AND ts < dateadd('m', 16, dateadd('d', 1, @demo_day::timestamp))) AS q
+  ON (t.symbol = q.symbol AND t.venue = q.source)
+LIST (0, 1s, 10s, 1m, 5m, 15m) AS h
+ORDER BY t.curve, t.venue, horizon_s;
+
+
+-- =====================================================================================
+-- ACT 2 · INTRADAY EXPOSURE
+-- Net position per book and curve against limits, now versus the intraday peak (a
+-- desk can be flat at the close and still have breached at 08:00), the path of the
+-- breach, exposure by delivery month with strips spread over their months, and the
+-- risk-report view: exposure by relative tenor bucket.
+-- =====================================================================================
+
+-- @@ 2a_limits_now_vs_peak
+-- Reveals 8.1: CRUDE / BRENT peaked above 100% of its limit this morning and is well
+-- inside it now. The opening book (the 00:00 snapshot) enters as one number per book
+-- and curve, then every fill moves it; the peak is the largest absolute value on that
+-- path. Limits are per book and curve, as risk sets them.
+DECLARE @demo_day := '2026-10-07'
+WITH sod AS (
+  SELECT book, curve, sum(qty) AS qty FROM energy_position_snapshots
+  WHERE ts = @demo_day::timestamp
+  GROUP BY book, curve
+),
+traded AS (
+  SELECT ts, book, curve, sum(qty) OVER (PARTITION BY book, curve ORDER BY ts) AS traded
+  FROM energy_fills
+  WHERE ts IN @demo_day
+),
+running AS (
+  SELECT @demo_day::timestamp AS ts, book, curve, qty AS net_qty FROM sod
+  UNION ALL
+  SELECT t.ts, t.book, t.curve, coalesce(s.qty, 0) + t.traded AS net_qty
+  FROM traded t LEFT JOIN sod s ON (book, curve)
+),
+ordered AS (
+  SELECT * FROM running ORDER BY ts
+),
+lim AS (
+  SELECT book, curve, max_abs_qty, unit FROM energy_limits
+  LATEST ON ts PARTITION BY book, curve
+)
+SELECT r.book, r.curve, l.unit,
+       round(last(r.net_qty))::decimal(16,0)                                   AS net_now,
+       round(max(abs(r.net_qty)))::decimal(16,0)                               AS intraday_peak,
+       round(100 * abs(last(r.net_qty)) / l.max_abs_qty, 1)::decimal(6,1)      AS pct_of_limit_now,
+       round(100 * max(abs(r.net_qty)) / l.max_abs_qty, 1)::decimal(6,1)       AS pct_of_limit_peak
+FROM ordered r
+JOIN lim l ON (book, curve)
+GROUP BY r.book, r.curve, l.unit, l.max_abs_qty
+ORDER BY pct_of_limit_peak DESC;
+
+-- @@ 2a_limits_by_symbol
+-- Drill-down of 2a: which contracts make up each book's position on the curve, now
+-- and at their own intraday peak, as a share of the curve limit. On the breach day
+-- the CRUDE / BRENT line is almost entirely the Brent front month.
+DECLARE @demo_day := '2026-10-07'
+WITH sod AS (
+  SELECT book, curve, symbol, sum(qty) AS qty FROM energy_position_snapshots
+  WHERE ts = @demo_day::timestamp
+  GROUP BY book, curve, symbol
+),
+traded AS (
+  SELECT ts, book, curve, symbol, sum(qty) OVER (PARTITION BY book, symbol ORDER BY ts) AS traded
+  FROM energy_fills
+  WHERE ts IN @demo_day
+),
+running AS (
+  SELECT @demo_day::timestamp AS ts, book, curve, symbol, qty AS net_qty FROM sod
+  UNION ALL
+  SELECT t.ts, t.book, t.curve, t.symbol, coalesce(s.qty, 0) + t.traded AS net_qty
+  FROM traded t LEFT JOIN sod s ON (book, symbol)
+),
+ordered AS (
+  SELECT * FROM running ORDER BY ts
+),
+lim AS (
+  SELECT book, curve, max_abs_qty, unit FROM energy_limits
+  LATEST ON ts PARTITION BY book, curve
+),
+agg AS (
+  SELECT r.book, r.curve, r.symbol, l.unit, l.max_abs_qty,
+         last(r.net_qty) AS net_now, max(abs(r.net_qty)) AS peak
+  FROM ordered r
+  JOIN lim l ON (book, curve)
+  GROUP BY r.book, r.curve, r.symbol, l.unit, l.max_abs_qty
+)
+SELECT a.book, a.curve, a.symbol, t.tenor, a.unit,
+       round(a.net_now)::decimal(16,0)                               AS net_now,
+       round(a.peak)::decimal(16,0)                                  AS intraday_peak,
+       round(100 * abs(a.net_now) / a.max_abs_qty, 1)::decimal(6,1)  AS pct_of_curve_limit_now,
+       round(100 * a.peak / a.max_abs_qty, 1)::decimal(6,1)          AS pct_of_curve_limit_peak
+FROM agg a
+LEFT JOIN energy_tenors t ON (symbol)
+ORDER BY pct_of_curve_limit_peak DESC;
+
+-- @@ 2b_breach_chart
+-- Chart: CRUDE's net Brent position through the day against its limit (8.1).
+DECLARE @demo_day := '2026-10-07'
+WITH sod AS (
+  SELECT sum(qty) AS qty FROM energy_position_snapshots
+  WHERE book = 'CRUDE' AND curve = 'BRENT' AND ts = @demo_day::timestamp
+),
+r AS (
+  SELECT ts, sum(qty) OVER (ORDER BY ts) AS traded
+  FROM energy_fills
+  WHERE book = 'CRUDE' AND curve = 'BRENT' AND ts IN @demo_day
+  ORDER BY ts
+),
+lim AS (
+  SELECT max_abs_qty FROM energy_limits
+  WHERE book = 'CRUDE' AND curve = 'BRENT'
+  LATEST ON ts PARTITION BY book, curve
+)
+SELECT r.ts, last(s.qty + r.traded) AS net_bbl, last(l.max_abs_qty) AS limit_bbl, -last(l.max_abs_qty) AS limit_short_bbl
+FROM (r TIMESTAMP(ts)) r
+CROSS JOIN sod s
+CROSS JOIN lim l
+SAMPLE BY 5m FILL(PREV);
+
+-- @@ 2c_delivery_month_ladder
+-- Gas, LNG and power exposure by delivery month, in MWh. Quarters, seasons and cals
+-- are spread over their months by delivery days (gas) or hours (power, DST-aware),
+-- then PIVOTed into one column per curve. Absolute delivery months are the right
+-- axis for a ladder; 2d is the same book by relative tenor.
+DECLARE @demo_day := '2026-10-07'
+WITH pos AS (
+  SELECT symbol, sum(qty) AS pos FROM energy_ledger
+  WHERE ts IN @demo_day
+  GROUP BY symbol
+),
+legs AS (
+  SELECT x.curve, m.delivery_start AS delivery_month,
+         p.pos * x.to_mwh * (CASE WHEN x.complex = 'GAS' THEN m.days * 1.0 / x.days ELSE m.hours * 1.0 / x.hours END) AS mwh
+  FROM pos p
+  JOIN energy_instruments x ON (symbol)
+  JOIN energy_instruments m ON m.curve = x.curve AND m.granularity = 'M'
+                           AND m.delivery_start >= x.delivery_start AND m.delivery_end <= x.delivery_end
+  WHERE x.complex IN ('GAS', 'LNG', 'POWER')
+)
+SELECT * FROM legs
+PIVOT (
+  round(sum(mwh)) FOR curve IN ('TTF', 'NBP', 'JKM', 'UKPWR')
+  GROUP BY delivery_month
+) ORDER BY delivery_month;
+
+-- @@ 2d_exposure_by_tenor
+-- How a risk report buckets exposure: net position per book and curve by relative
+-- tenor, front month, M2 to M6, back months and strips (carbon: the first December
+-- is the front, later ones are back). In delivery units, with the contracts behind
+-- each bucket.
+DECLARE @demo_day := '2026-10-07'
+WITH pos AS (
+  SELECT book, symbol, sum(qty) AS net FROM energy_ledger
+  WHERE ts IN @demo_day
+  GROUP BY book, symbol
+),
+b AS (
+  SELECT p.book, c.curve, c.unit, p.symbol, p.net,
+         CASE WHEN t.tenor IS NULL                              THEN '5_expired'
+              WHEN t.granularity IN ('Q', 'S', 'Y')             THEN '4_strips'
+              WHEN t.tenor_n = 1                                THEN '1_front'
+              WHEN t.granularity = 'M' AND t.tenor_n <= 6       THEN '2_M2_to_M6'
+              ELSE '3_back' END AS bucket
+  FROM pos p
+  JOIN energy_instruments c ON (symbol)
+  LEFT JOIN energy_tenors t ON t.symbol = p.symbol
+  WHERE p.net != 0
+)
+SELECT book, curve, bucket, unit,
+       round(sum(net))::decimal(16,0)              AS net_qty,
+       count()                                     AS contracts,
+       string_agg(symbol::string, ' ')             AS symbols
+FROM b
+GROUP BY book, curve, bucket, unit
+ORDER BY book, curve, bucket;
+
+
+-- @@ 2e_position_by_instrument_vs_venue
+-- Same risk, two margin calls. For each book and dual-listed instrument: the net
+-- position (what risk sees) next to the position on each venue (what each clearing
+-- house margins), from the opening book plus today's fills on that venue. The venue
+-- rows add up to the instrument. Today's fills come from the positions_live_by_venue
+-- live view (beta in 10.0); 2e_twin_window_function is the same cell over fills.
+DECLARE @demo_day := '2026-10-07'
+WITH sod AS (
+  SELECT book, symbol, venue, sum(qty) AS qty FROM energy_position_snapshots
+  WHERE ts = @demo_day::timestamp AND curve IN ('TTF', 'EUA', 'UKPWR')
+  GROUP BY book, symbol, venue
+),
+live AS (
+  SELECT book, symbol, venue, pos AS qty FROM energy_positions_live_by_venue
+  WHERE ts IN @demo_day AND curve IN ('TTF', 'EUA', 'UKPWR')
+  LATEST ON ts PARTITION BY book, symbol, venue
+),
+pv AS (
+  SELECT book, symbol, venue, sum(qty) AS venue_qty
+  FROM (SELECT * FROM sod UNION ALL SELECT * FROM live)
+  GROUP BY book, symbol, venue
+),
+w AS (
+  SELECT book, symbol, venue, venue_qty,
+         sum(venue_qty) OVER (PARTITION BY book, symbol) AS instrument_qty,
+         count() OVER (PARTITION BY book, symbol) AS venues
+  FROM pv
+  WHERE venue_qty != 0
+)
+SELECT w.book, w.symbol, t.tenor, w.venue, coalesce(l.ccp, 'BILATERAL') AS ccp, l.exchange_symbol,
+       round(w.venue_qty)::decimal(16,0)      AS venue_qty,
+       round(w.instrument_qty)::decimal(16,0) AS instrument_qty,
+       w.venues
+FROM w
+LEFT JOIN energy_listings l ON l.symbol = w.symbol AND l.exchange = w.venue
+LEFT JOIN energy_tenors t ON t.symbol = w.symbol
+ORDER BY w.venues DESC, w.book, w.symbol, w.venue;
+
+-- @@ 2e_twin_window_function
+-- The same without the live view: today's per-venue position is a running sum over
+-- fills, so the last value of the window is just the total.
+-- Views: positions_running_day, tenors.
+DECLARE @demo_day := '2026-10-07', @day := @demo_day
+WITH sod AS (
+  SELECT book, symbol, venue, sum(qty) AS qty FROM energy_position_snapshots
+  WHERE ts = @demo_day::timestamp AND curve IN ('TTF', 'EUA', 'UKPWR')
+  GROUP BY book, symbol, venue
+),
+live AS (
+  SELECT book, symbol, venue, last(venue_pos) AS qty FROM energy_positions_running_day
+  WHERE curve IN ('TTF', 'EUA', 'UKPWR')
+  GROUP BY book, symbol, venue
+),
+pv AS (
+  SELECT book, symbol, venue, sum(qty) AS venue_qty
+  FROM (SELECT * FROM sod UNION ALL SELECT * FROM live)
+  GROUP BY book, symbol, venue
+),
+w AS (
+  SELECT book, symbol, venue, venue_qty,
+         sum(venue_qty) OVER (PARTITION BY book, symbol) AS instrument_qty,
+         count() OVER (PARTITION BY book, symbol) AS venues
+  FROM pv
+  WHERE venue_qty != 0
+)
+SELECT w.book, w.symbol, t.tenor, w.venue, coalesce(l.ccp, 'BILATERAL') AS ccp, l.exchange_symbol,
+       round(w.venue_qty)::decimal(16,0)      AS venue_qty,
+       round(w.instrument_qty)::decimal(16,0) AS instrument_qty,
+       w.venues
+FROM w
+LEFT JOIN energy_listings l ON l.symbol = w.symbol AND l.exchange = w.venue
+LEFT JOIN energy_tenors t ON t.symbol = w.symbol
+ORDER BY w.venues DESC, w.book, w.symbol, w.venue;
+
+-- @@ 2f_venue_share_of_fills
+-- Where the desk's screen fills went today, per book, dual-listed instrument and venue:
+-- fills, volume and the venue's share of the instrument's fills. Expect about 80/20 on
+-- months and more on the secondary for strips; a book closing a position tends to do it
+-- on the venue where it is open (margin), so single books can lean either way.
+DECLARE @demo_day := '2026-10-07'
+WITH f AS (
+  SELECT book, symbol, venue, count() AS fills, sum(abs(qty)) AS volume
+  FROM energy_fills
+  WHERE ts IN @demo_day AND curve IN ('TTF', 'EUA', 'UKPWR')
+  GROUP BY book, symbol, venue
+)
+SELECT f.book, f.symbol, t.tenor, f.venue, f.fills,
+       round(f.volume)::decimal(16,0) AS volume,
+       round(100.0 * f.fills / sum(f.fills) OVER (PARTITION BY f.book, f.symbol), 1)::decimal(5,1) AS pct_of_instrument_fills
+FROM f
+LEFT JOIN energy_tenors t ON t.symbol = f.symbol
+ORDER BY f.book, f.symbol, f.venue;
+
+
+-- =====================================================================================
+-- ACT 3 · VOLATILITY
+-- Realised vol from 5-minute bars (close-to-close, Parkinson range, RiskMetrics EWMA),
+-- implied vol from the surface (term structure, skew, smile), and the gap between
+-- them. Commodity specifics: front months move far more than back months, and power
+-- prices go negative, which breaks log returns. Tenor here is relative: M1 is the
+-- front month today, so the Samuelson effect reads as "M1 versus M12".
+-- =====================================================================================
+
+
+
+-- @@ 3a_realized_vol_by_tenor
+-- The Samuelson effect: realised vol of every contract on every curve over the last
+-- day of 5-minute bars, by relative tenor. M1 carries about twice the vol of M12 on
+-- Brent, TTF and UK power; strips move like the average of their months. Only
+-- consecutive bars count, so a quiet back month is not credited with a 20-minute
+-- jump as if it were five minutes.
+DECLARE @demo_day := '2026-10-07'
+WITH r AS (
+  SELECT ts, symbol,
+         ln(close / lag(close) OVER (PARTITION BY symbol ORDER BY ts)) AS ret,
+         datediff('s', lag(ts) OVER (PARTITION BY symbol ORDER BY ts), ts) AS gap_s
+  FROM energy_quotes_5m
+  WHERE curve != 'FX' AND ts >= dateadd('d', -1, @demo_day::timestamp)
+),
+v AS (
+  SELECT symbol, count() AS returns, sqrt(avg(ret * ret) * 365 * 288) AS vol
+  FROM r
+  WHERE gap_s = 300
+  GROUP BY symbol
+)
+SELECT t.curve, t.tenor, t.symbol, t.exchange_symbol, t.granularity, t.months_to_delivery,
+       v.returns,
+       round(100 * v.vol, 1)::decimal(6,1) AS realized_vol_pct
+FROM v
+JOIN energy_tenors t ON (symbol)
+ORDER BY t.curve, t.granularity, t.tenor_n;
+
+-- @@ 3b_rolling_vol_front
+-- Chart: three realised-vol estimators on the TTF front month through the day, each
+-- annualised on calendar time (the market diffuses around the clock: 365 x 288 bars).
+-- The EWMA is RiskMetrics' lambda 0.94 via avg(x, 'alpha', 0.06) OVER.
+DECLARE @demo_day := '2026-10-07', @ttf := 'TTF_Nov-26'
+WITH r AS (
+  SELECT ts, high, low, ln(close / lag(close) OVER (ORDER BY ts)) AS ret
+  FROM energy_quotes_5m
+  WHERE symbol = @ttf AND ts IN @demo_day
+)
+SELECT ts, @ttf AS symbol,
+       round(100 * sqrt(avg(ret * ret) OVER w * 365 * 288), 1)::decimal(6,1)                                     AS realized_1h,
+       round(100 * sqrt(avg(ln(high / low) * ln(high / low)) OVER w / (4 * ln(2)) * 365 * 288), 1)::decimal(6,1) AS parkinson_1h,
+       round(100 * sqrt(avg(ret * ret, 'alpha', 0.06) OVER (ORDER BY ts) * 365 * 288), 1)::decimal(6,1)         AS ewma_lambda_094
+FROM r
+WINDOW w AS (ORDER BY ts ROWS 11 PRECEDING)
+ORDER BY ts;
+
+-- @@ 3c_implied_term_structure_and_skew
+-- The surface as it stands: ATM term structure, 25-delta risk reversal and butterfly.
+-- Crude has put skew (risk reversal < 0); gas and power have call skew (the market
+-- pays for upside spikes). LATEST ON per bucket picks the newest mark.
+DECLARE @demo_day := '2026-10-07'
+WITH smile AS (
+  SELECT curve, symbol, delta_bucket, tau, iv FROM energy_iv_marks
+  WHERE ts IN @demo_day
+  LATEST ON ts PARTITION BY symbol, delta_bucket
+),
+p AS (
+  SELECT * FROM smile
+  PIVOT (
+    avg(iv) FOR delta_bucket IN ('10P' AS p10, '25P' AS p25, 'ATM' AS atm, '25C' AS c25, '10C' AS c10)
+    GROUP BY curve, symbol, tau
+  )
+)
+SELECT p.curve, t.tenor, p.symbol, t.exchange_symbol,
+       round(p.tau * 12, 1)::decimal(5,1)                         AS months_to_expiry,
+       round(100 * p.atm, 1)::decimal(6,1)                        AS atm_vol,
+       round(100 * (p.c25 - p.p25), 1)::decimal(6,1)              AS risk_reversal_25d,
+       round(100 * ((p.c25 + p.p25) / 2 - p.atm), 1)::decimal(6,1) AS butterfly_25d
+FROM p
+LEFT JOIN energy_tenors t ON (symbol)
+ORDER BY p.curve, p.tau;
+
+-- @@ 3d_implied_vs_realized
+-- Implied ATM against the last 24 hours of realised vol, per contract and tenor.
+DECLARE @demo_day := '2026-10-07'
+WITH atm AS (
+  SELECT symbol, curve, iv FROM energy_iv_marks
+  WHERE delta_bucket = 'ATM' AND ts IN @demo_day
+  LATEST ON ts PARTITION BY symbol
+),
+rv AS (
+  SELECT symbol, sqrt(avg(ret * ret) * 365 * 288) AS realized
+  FROM (
+    SELECT ts, symbol, ln(close / lag(close) OVER (PARTITION BY symbol ORDER BY ts)) AS ret,
+           datediff('s', lag(ts) OVER (PARTITION BY symbol ORDER BY ts), ts) AS gap_s
+    FROM energy_quotes_5m
+    WHERE curve IN ('BRENT', 'TTF', 'UKPWR') AND ts >= dateadd('d', -1, @demo_day::timestamp)
+  )
+  WHERE gap_s = 300
+  GROUP BY symbol
+)
+SELECT a.curve, t.tenor, a.symbol, t.exchange_symbol,
+       round(100 * a.iv, 1)::decimal(6,1)                AS implied_atm,
+       round(100 * r.realized, 1)::decimal(6,1)          AS realized_24h,
+       round(100 * (a.iv - r.realized), 1)::decimal(6,1) AS implied_minus_realized
+FROM atm a
+JOIN rv r ON (symbol)
+JOIN energy_tenors t ON (symbol)
+ORDER BY a.curve, t.tenor_n;
+
+-- @@ 3e_negative_power_breaks_log_returns
+-- UK day-ahead hourly prices. On the windy night (8.8) hours 01:00 to 05:00 clear
+-- negative, ln(p_t / p_t-1) is undefined across zero, and a vol model built on log
+-- returns silently drops them. Energy desks measure absolute changes (normal vol).
+-- The three days up to the demo day, the windy night included.
+DECLARE @demo_day := '2026-10-07'
+WITH h AS (
+  SELECT ts, market, price,
+         price - lag(price) OVER (PARTITION BY market ORDER BY ts)     AS abs_change,
+         ln(price / lag(price) OVER (PARTITION BY market ORDER BY ts)) AS log_return
+  FROM energy_da_prices
+  WHERE market = 'UK_DA' AND ts >= dateadd('d', -2, @demo_day::timestamp) AND ts < dateadd('d', 1, @demo_day::timestamp)
+)
+SELECT timestamp_floor('d', ts)                          AS day,
+       market,
+       sum(CASE WHEN price < 0 THEN 1 ELSE 0 END)        AS negative_hours,
+       round(min(price), 2)::decimal(8,2)                AS min_price_gbp,
+       round(stddev(abs_change), 2)::decimal(8,2)        AS normal_vol_gbp_per_hour,
+       count(abs_change) - count(log_return)             AS log_returns_lost
+FROM h
+GROUP BY day, market
+ORDER BY day;
+
+
+-- =====================================================================================
+-- ACT 4 · FORWARD CURVES
+-- The strip at mixed granularity (months, quarters, seasons, cals), how it moved
+-- against the last settlement, its shape, consistency across granularities (now and
+-- through history), and the curve as it stood at any past instant.
+-- =====================================================================================
+
+-- @@ 4a_live_vs_settlement
+-- TTF, the first twelve months: the curve builder's latest mark against the last
+-- official settlement, by tenor and exchange symbol.
+-- Views: marks_asof, tenors.
+DECLARE @demo_day := '2026-10-07', @asof := dateadd('d', 1, @demo_day::timestamp) - 1
+WITH settle AS (
+  SELECT symbol, price, ts FROM energy_settlements
+  WHERE curve = 'TTF' AND ts < @demo_day::timestamp AND ts >= dateadd('d', -7, @demo_day::timestamp)
+  LATEST ON ts PARTITION BY symbol
+)
+SELECT t.tenor, l.symbol, t.exchange_symbol,
+       round(s.price, 3)::decimal(10,3)             AS last_settlement,
+       round(l.price, 3)::decimal(10,3)             AS live_mark,
+       round(l.price - s.price, 3)::decimal(10,3)   AS change,
+       l.source
+FROM energy_marks_asof l
+JOIN energy_tenors t ON (symbol)
+LEFT JOIN settle s ON (symbol)
+WHERE l.curve = 'TTF' AND t.granularity = 'M' AND t.tenor_n <= 12
+ORDER BY t.tenor_n;
+
+-- @@ 4b_curve_shape
+-- Prompt spread (M1 - M2 > 0 is backwardation), M1 - M12, and winter minus summer,
+-- with the contracts each number is made of. Brent is backwardated, gas and power are
+-- seasonal, carbon is in contango. M1, M2, M12 come straight from the tenors view.
+-- Views: marks_asof, tenors.
+DECLARE @demo_day := '2026-10-07', @asof := dateadd('d', 1, @demo_day::timestamp) - 1
+WITH k AS (
+  SELECT k.symbol, k.price, t.curve, t.granularity, t.tenor, t.delivery_start
+  FROM energy_marks_asof k
+  JOIN energy_tenors t ON (symbol)
+  WHERE k.curve IN ('BRENT', 'WTI', 'TTF', 'NBP', 'UKPWR', 'EUA')
+),
+m1 AS (SELECT curve, symbol AS m1_symbol, price AS m1 FROM k WHERE tenor IN ('M1', 'Z1')),
+m2 AS (SELECT curve, symbol AS m2_symbol, price AS m2 FROM k WHERE tenor IN ('M2', 'Z2')),
+m12 AS (SELECT curve, symbol AS m12_symbol, price AS m12 FROM k WHERE tenor = 'M12'),
+win AS (SELECT curve, symbol AS winter_symbol, price AS winter FROM k
+        WHERE granularity = 'S' AND month(delivery_start) = 10 AND tenor IN ('S1', 'S2')),
+summ AS (SELECT curve, symbol AS summer_symbol, price AS summer FROM k
+         WHERE granularity = 'S' AND month(delivery_start) = 4 AND tenor IN ('S1', 'S2'))
+SELECT m1.curve,
+       m1.m1_symbol, m2.m2_symbol,
+       round(m1.m1 - m2.m2, 3)::decimal(8,3)              AS prompt_spread,
+       m12.m12_symbol,
+       round(m1.m1 - m12.m12, 3)::decimal(8,3)            AS m1_minus_m12,
+       win.winter_symbol, summ.summer_symbol,
+       round(win.winter - summ.summer, 3)::decimal(8,3)   AS winter_minus_summer
+FROM m1
+JOIN m2 ON (curve)
+LEFT JOIN m12 ON (curve)
+LEFT JOIN win ON (curve)
+LEFT JOIN summ ON (curve)
+ORDER BY m1.curve;
+
+-- @@ 4c_consistency_now
+-- A quarter, season or year must equal the weighted average of its months: days for
+-- gas, hours for power (DST-aware). Gaps are tick noise unless something is wrong.
+-- Views: marks_asof, tenors (4d runs the same check minute by minute from strip_gaps_day).
+DECLARE @demo_day := '2026-10-07', @asof := dateadd('d', 1, @demo_day::timestamp) - 1
+WITH k AS (
+  SELECT k.symbol, k.price, k.source, k.version, t.tenor, t.exchange_symbol,
+         t.curve, t.complex, t.granularity, t.delivery_start, t.delivery_end, t.hours, t.days
+  FROM energy_marks_asof k
+  JOIN energy_tenors t ON (symbol)
+  WHERE k.curve IN ('TTF', 'NBP', 'UKPWR')
+),
+g AS (
+  SELECT s.symbol, s.tenor, s.exchange_symbol, s.price AS strip_mark, s.source, s.version,
+         sum(m.price * (CASE WHEN s.complex = 'GAS' THEN m.days ELSE m.hours END))
+           / sum(CASE WHEN s.complex = 'GAS' THEN m.days ELSE m.hours END) AS from_months,
+         count() AS months
+  FROM k s
+  JOIN k m ON m.curve = s.curve AND m.granularity = 'M'
+          AND m.delivery_start >= s.delivery_start AND m.delivery_end <= s.delivery_end
+  WHERE s.granularity IN ('Q', 'S', 'Y')
+  GROUP BY s.symbol, s.tenor, s.exchange_symbol, s.price, s.source, s.version
+)
+SELECT symbol, tenor, exchange_symbol,
+       round(strip_mark, 3)::decimal(10,3)               AS strip_mark,
+       round(from_months, 3)::decimal(10,3)              AS from_months,
+       round(strip_mark - from_months, 3)::decimal(10,3) AS gap,
+       months, source, version
+FROM g
+ORDER BY abs(strip_mark - from_months) DESC
+LIMIT 15;
+
+-- @@ 4d_consistency_history
+-- The same check over every one-minute snapshot of the day, as the marks were
+-- published (version 1). Reveals 8.2: a manual mark on a TTF quarter sat 2.50 EUR
+-- above its months for half an hour before the curve service corrected it. The
+-- correction is version 2 at the same ts; nothing was overwritten.
+-- Views: strip_gaps_day (one row per strip per minute with its gap), tenors.
+DECLARE @demo_day := '2026-10-07', @day := @demo_day
+WITH agg AS (
+  SELECT symbol, source, marked_by,
+         min(ts) AS first_seen, max(ts) AS last_seen, count() AS minutes, max(abs(gap)) AS worst_gap
+  FROM energy_strip_gaps_day
+  WHERE abs(gap) > 0.25
+  GROUP BY symbol, source, marked_by
+)
+SELECT a.symbol, t.tenor, t.exchange_symbol, a.source, a.marked_by, a.first_seen, a.last_seen, a.minutes,
+       round(a.worst_gap, 3)::decimal(10,3) AS worst_gap
+FROM agg a
+LEFT JOIN energy_tenors t ON (symbol)
+ORDER BY a.first_seen;
+
+-- @@ 4e_curve_time_travel
+-- The TTF curve as it stood at @asof against the latest marks of the day: LATEST ON
+-- with ts <= @asof is the whole reconstruction. Change @asof to any instant in
+-- history. The tenor column is the tenor as of @asof, so a time-travelled curve reads
+-- M1, M2, ... as the desk saw it then.
+-- Views: marks_asof and tenors_asof, both at @asof.
+DECLARE @demo_day := '2026-10-07', @asof := '2026-10-07T12:00:00.000000Z'
+WITH now_marks AS (
+  SELECT symbol, price FROM energy_curve_marks
+  WHERE curve = 'TTF' AND ts IN @demo_day
+  LATEST ON ts PARTITION BY symbol
+)
+SELECT tn.tenor AS tenor_at_asof, t.symbol, tn.exchange_symbol,
+       round(t.price, 3)::decimal(10,3)           AS at_asof,
+       round(n.price, 3)::decimal(10,3)           AS now,
+       round(n.price - t.price, 3)::decimal(10,3) AS since_asof
+FROM energy_marks_asof t
+JOIN now_marks n ON (symbol)
+JOIN energy_tenors_asof tn ON (symbol)
+WHERE t.curve = 'TTF' AND tn.granularity IN ('M', 'Q', 'S') AND tn.delivery_start < dateadd('M', 19, @demo_day::timestamp)
+ORDER BY tn.granularity, tn.delivery_start;
+
+
+-- =====================================================================================
+-- ACT 5 · SPREADS
+-- Legs tick at different times, so an exact join on timestamp returns nothing. ASOF
+-- JOIN pairs each tick of one leg with the latest price of the others; TOLERANCE
+-- refuses a match when the other leg is too old to trust. Every cell names its legs.
+-- =====================================================================================
+
+-- @@ 5a_lng_arb_jkm_ttf
+-- Chart: Asia versus Europe for the prompt month in $/MMBtu, TTF converted at EURUSD,
+-- one point a minute for the whole day from the 1-minute bars (each leg's last quote
+-- in the minute, ASOF-aligned with a 5-minute tolerance for minutes a leg did not
+-- tick). A cargo decision nets freight off this; freight is not in the dataset.
+-- Views: mid_1m_day, once per leg.
+DECLARE @demo_day := '2026-10-07', @day := @demo_day, @jkm := 'JKM_Nov-26', @ttf := 'TTF_Nov-26'
+SELECT j.ts, @jkm AS jkm_symbol, @ttf AS ttf_symbol,
+       round(mid(j.last_bid, j.last_ask), 3)::decimal(10,3)                                                  AS jkm_usd_mmbtu,
+       round(mid(t.last_bid, t.last_ask) * mid(e.last_bid, e.last_ask) / 3.412, 3)::decimal(10,3)            AS ttf_usd_mmbtu,
+       round(mid(j.last_bid, j.last_ask) - mid(t.last_bid, t.last_ask) * mid(e.last_bid, e.last_ask) / 3.412, 3)::decimal(10,3) AS jkm_minus_ttf
+FROM (energy_mid_1m_day WHERE symbol = @jkm) j
+ASOF JOIN (energy_mid_1m_day WHERE symbol = @ttf) t TOLERANCE 5m
+ASOF JOIN (energy_mid_1m_day WHERE symbol = 'EURUSD') e TOLERANCE 5m
+ORDER BY j.ts;
+
+-- @@ 5a_ticks_half_hour
+-- The same spread tick by tick over 30 minutes from @asof: every JKM tick paired with
+-- the latest TTF and EURUSD ticks, and TOLERANCE 30s refuses a leg older than that.
+-- TTF is read from its primary venue, ICE Endex (5f compares the two venues).
+-- This is the "legs tick at different times" point; the day-long series above is the
+-- chart. Each leg is the quotes table with a filter, not a CTE: that is the form the
+-- ASOF JOIN optimiser recognises; the same join over CTEs takes a slow path.
+DECLARE @asof := '2026-10-07T12:00:00.000000Z', @jkm := 'JKM_Nov-26', @ttf := 'TTF_Nov-26'
+SELECT jkm.ts, jkm.symbol AS jkm_symbol, ttf.symbol AS ttf_symbol,
+       round(mid(jkm.bid, jkm.ask), 3)::decimal(10,3)                                                 AS jkm_usd_mmbtu,
+       round(mid(ttf.bid, ttf.ask) * mid(eur.bid, eur.ask) / 3.412, 3)::decimal(10,3)                 AS ttf_usd_mmbtu,
+       round(mid(jkm.bid, jkm.ask) - mid(ttf.bid, ttf.ask) * mid(eur.bid, eur.ask) / 3.412, 3)::decimal(10,3) AS jkm_minus_ttf,
+       ttf.ts AS ttf_tick_ts,
+       eur.ts AS eur_tick_ts
+FROM (energy_quotes WHERE symbol = @jkm AND ts >= @asof AND ts < dateadd('m', 30, @asof)) jkm
+ASOF JOIN (energy_quotes WHERE symbol = @ttf AND source = 'ICE_ENDEX' AND ts >= dateadd('m', -5, @asof) AND ts < dateadd('m', 30, @asof)) ttf TOLERANCE 30s
+ASOF JOIN (energy_quotes WHERE symbol = 'EURUSD' AND ts >= dateadd('m', -5, @asof) AND ts < dateadd('m', 30, @asof)) eur TOLERANCE 30s
+ORDER BY jkm.ts;
+
+-- @@ 5b_gasoil_crack_and_brent_wti
+-- Gasoil crack in $/bbl (7.45 bbl per tonne) and the Brent-WTI spread, hourly open and
+-- last, from the 1-minute bars (each leg's last quote in the minute: the ASOF
+-- alignment with a one-minute tolerance at a fraction of the cost on the most liquid
+-- contracts of the day). Each leg is its curve's front month.
+-- Views: mid_1m_day, once per leg.
+DECLARE @demo_day := '2026-10-07', @day := @demo_day, @brent := 'BRENT_Dec-26', @gasoil := 'GASOIL_Oct-26', @wti := 'WTI_Nov-26'
+WITH s AS (
+  SELECT b.ts, mid(g.last_bid, g.last_ask) / 7.45 - mid(b.last_bid, b.last_ask) AS gasoil_crack,
+         mid(b.last_bid, b.last_ask) - mid(w.last_bid, w.last_ask) AS brent_wti
+  FROM (energy_mid_1m_day WHERE symbol = @brent) b
+  JOIN (energy_mid_1m_day WHERE symbol = @gasoil) g ON (ts)
+  JOIN (energy_mid_1m_day WHERE symbol = @wti) w ON (ts)
+)
+SELECT ts, @brent AS brent_symbol, @gasoil AS gasoil_symbol, @wti AS wti_symbol,
+       round(first(gasoil_crack), 2)::decimal(8,2) AS crack_open,
+       round(last(gasoil_crack), 2)::decimal(8,2)  AS crack_last,
+       round(first(brent_wti), 2)::decimal(8,2)    AS brent_wti_open,
+       round(last(brent_wti), 2)::decimal(8,2)     AS brent_wti_last
+FROM s
+SAMPLE BY 1h;
+
+-- @@ 5c_clean_spark_zscore
+-- Chart: UK clean spark spread for the prompt month, one point a minute from the
+-- 1-minute bars, with a z-score over the trailing two hours. Power - gas / efficiency
+-- - carbon x emission factor / efficiency; NBP p/therm x 0.341214 = GBP/MWh. 50%
+-- efficiency and 0.2 tCO2/MWh of gas are assumptions, stated on the slide.
+-- Views: mid_1m_day, once per leg.
+DECLARE @demo_day := '2026-10-07', @day := @demo_day, @pwr := 'UKPWR_Nov-26', @nbp := 'NBP_Nov-26', @uka := 'UKA_Dec-26'
+WITH s AS (
+  SELECT p.ts, mid(p.last_bid, p.last_ask) - mid(n.last_bid, n.last_ask) * 0.341214 / 0.5 - mid(u.last_bid, u.last_ask) * 0.2 / 0.5 AS spread
+  FROM (energy_mid_1m_day WHERE symbol = @pwr) p
+  ASOF JOIN (energy_mid_1m_day WHERE symbol = @nbp) n TOLERANCE 5m
+  ASOF JOIN (energy_mid_1m_day WHERE symbol = @uka) u TOLERANCE 5m
+)
+SELECT ts, @pwr AS power_symbol, @nbp AS gas_symbol, @uka AS carbon_symbol,
+       round(spread, 2)::decimal(8,2)                                                    AS clean_spark_gbp_mwh,
+       round((spread - avg(spread) OVER w) / stddev(spread) OVER w, 2)::decimal(6,2)     AS zscore_2h
+FROM s
+WINDOW w AS (ORDER BY ts ROWS 119 PRECEDING)
+ORDER BY ts;
+
+-- @@ 5c_ticks_half_hour
+-- The same spread on every power tick over 30 minutes from @asof, each paired with the
+-- latest gas and carbon ticks within a one-minute tolerance. Power is read from its
+-- primary venue, ICE.
+DECLARE @asof := '2026-10-07T12:00:00.000000Z', @pwr := 'UKPWR_Nov-26', @nbp := 'NBP_Nov-26', @uka := 'UKA_Dec-26'
+SELECT pwr.ts, pwr.symbol AS power_symbol, nbp.symbol AS gas_symbol, uka.symbol AS carbon_symbol,
+       round(mid(pwr.bid, pwr.ask) - mid(nbp.bid, nbp.ask) * 0.341214 / 0.5 - mid(uka.bid, uka.ask) * 0.2 / 0.5, 2)::decimal(8,2) AS clean_spark_gbp_mwh,
+       nbp.ts AS gas_tick_ts,
+       uka.ts AS carbon_tick_ts
+FROM (energy_quotes WHERE symbol = @pwr AND source = 'ICE' AND ts >= @asof AND ts < dateadd('m', 30, @asof)) pwr
+ASOF JOIN (energy_quotes WHERE symbol = @nbp AND ts >= dateadd('m', -5, @asof) AND ts < dateadd('m', 30, @asof)) nbp TOLERANCE 1m
+ASOF JOIN (energy_quotes WHERE symbol = @uka AND ts >= dateadd('m', -5, @asof) AND ts < dateadd('m', 30, @asof)) uka TOLERANCE 1m
+ORDER BY pwr.ts;
+
+-- @@ 5d_forward_clean_spark_curve
+-- The same spread along the strip: what a gas plant's hedging desk actually manages.
+-- Power and gas months are joined on delivery month, carbon on delivery year; the
+-- tenor is the power month's.
+-- Views: marks_asof, tenors.
+DECLARE @demo_day := '2026-10-07', @asof := dateadd('d', 1, @demo_day::timestamp) - 1
+WITH legs AS (
+  SELECT t.curve, t.symbol, t.exchange_symbol, t.tenor, t.tenor_n, t.delivery_start,
+         year(t.delivery_start) AS yr, month(t.delivery_start) AS mo, k.price
+  FROM energy_marks_asof k JOIN energy_tenors t ON (symbol)
+  WHERE k.curve IN ('UKPWR', 'NBP', 'UKA') AND t.granularity IN ('M', 'Z')
+)
+SELECT p.tenor, p.symbol AS power_symbol, p.exchange_symbol AS power_exchange_symbol,
+       g.symbol AS gas_symbol, u.symbol AS carbon_symbol,
+       round(p.price, 2)::decimal(8,2)                                                    AS power_gbp_mwh,
+       round(g.price * 0.341214, 2)::decimal(8,2)                                         AS gas_gbp_mwh,
+       round(u.price, 2)::decimal(8,2)                                                    AS uka_gbp_t,
+       round(p.price - g.price * 0.341214 / 0.5 - u.price * 0.2 / 0.5, 2)::decimal(8,2)   AS clean_spark_gbp_mwh
+FROM legs p
+JOIN legs g ON g.curve = 'NBP' AND g.yr = p.yr AND g.mo = p.mo
+JOIN legs u ON u.curve = 'UKA' AND u.yr = p.yr
+WHERE p.curve = 'UKPWR' AND p.tenor_n <= 24
+ORDER BY p.tenor_n;
+
+-- @@ 5e_leg_correlation_and_hedge_ratio
+-- How much gas hedges a MWh of power: correlation and regression slope of 5-minute
+-- changes in the prompt power month against the prompt gas month in GBP/MWh, over
+-- the last two days. The slope is the minimum-variance hedge ratio.
+DECLARE @demo_day := '2026-10-07', @pwr := 'UKPWR_Nov-26', @nbp := 'NBP_Nov-26'
+WITH p AS (SELECT ts, close FROM energy_quotes_5m WHERE symbol = @pwr AND ts >= dateadd('d', -1, @demo_day::timestamp)),
+     g AS (SELECT ts, close FROM energy_quotes_5m WHERE symbol = @nbp AND ts >= dateadd('d', -1, @demo_day::timestamp)),
+     j AS (
+       SELECT p.ts, p.close AS pwr, g.close * 0.341214 AS gas
+       FROM p ASOF JOIN g TOLERANCE 5m
+     ),
+     r AS (
+       SELECT ts, pwr - lag(pwr) OVER (ORDER BY ts) AS d_pwr, gas - lag(gas) OVER (ORDER BY ts) AS d_gas
+       FROM j
+     )
+SELECT @pwr AS power_symbol, @nbp AS gas_symbol,
+       count(d_pwr)                                       AS bars,
+       round(corr(d_pwr, d_gas), 3)::decimal(6,3)         AS correlation,
+       round(regr_slope(d_pwr, d_gas), 3)::decimal(6,3)   AS hedge_ratio_mwh_gas_per_mwh_power,
+       round(stddev(d_pwr), 3)::decimal(8,3)              AS power_5m_stdev_gbp,
+       round(stddev(d_gas), 3)::decimal(8,3)              AS gas_5m_stdev_gbp
+FROM r;
+
+
+-- @@ 5f_cross_venue_spread
+-- Chart: the TTF front month on its two venues, ICE Endex minus EEX mid (each venue's
+-- average mid in the second), on a 1-second grid through European hours, in ticks. The basis hugs zero (EEX re-prices off the
+-- same fair value, a fraction of a second late, with a small slow drift) and the
+-- planted divergences stand out: EEX two to four ticks away for 5 to 30 seconds, then
+-- closed. Say: this is the cheapest arbitrage monitor you will ever build.
+DECLARE @demo_day := '2026-10-07', @ttf := 'TTF_Nov-26'
+WITH b AS (
+  SELECT ts, source, avg(mid(bid, ask)) AS mid
+  FROM energy_quotes
+  WHERE symbol = @ttf AND ts >= dateadd('h', 7, @demo_day::timestamp) AND ts < dateadd('h', 17, @demo_day::timestamp)
+  SAMPLE BY 1s
+),
+g AS (
+  SELECT ts,
+         max(CASE WHEN source = 'ICE_ENDEX' THEN mid END) AS ice_endex_mid,
+         max(CASE WHEN source = 'EEX' THEN mid END)       AS eex_mid
+  FROM b
+  GROUP BY ts
+)
+SELECT ts, @ttf AS symbol,
+       round(ice_endex_mid, 4)::decimal(10,4)                    AS ice_endex_mid,
+       round(eex_mid, 4)::decimal(10,4)                          AS eex_mid,
+       round((ice_endex_mid - eex_mid) / 0.005, 2)::decimal(8,2) AS basis_ticks
+FROM g
+ORDER BY ts;
+
+-- @@ 5f_divergence_episodes
+-- The same comparison as a list: every minute in which the two venues sat 1.75 ticks
+-- or more apart for at least three seconds, with the worst gap. Normal basis noise is
+-- well under a tick, so what is left is the planted divergences: a few per front month
+-- per European day, each lasting seconds.
+DECLARE @demo_day := '2026-10-07', @ttf := 'TTF_Nov-26'
+WITH b AS (
+  SELECT ts, source, avg(mid(bid, ask)) AS mid
+  FROM energy_quotes
+  WHERE symbol = @ttf AND ts >= dateadd('h', 7, @demo_day::timestamp) AND ts < dateadd('h', 17, @demo_day::timestamp)
+  SAMPLE BY 1s
+),
+g AS (
+  SELECT ts, (max(CASE WHEN source = 'ICE_ENDEX' THEN mid END) - max(CASE WHEN source = 'EEX' THEN mid END)) / 0.005 AS basis_ticks
+  FROM b
+  GROUP BY ts
+),
+e AS (
+  SELECT timestamp_floor('m', ts) AS minute, count() AS seconds_apart, max(abs(basis_ticks)) AS worst
+  FROM g
+  WHERE abs(basis_ticks) >= 1.75
+  GROUP BY minute
+)
+SELECT minute, @ttf AS symbol, seconds_apart, round(worst, 1)::decimal(6,1) AS worst_gap_ticks
+FROM e
+WHERE seconds_apart >= 3
+ORDER BY minute;
+
+
+-- =====================================================================================
+-- ACT 6 · HISTORICAL VALUATION RECONSTRUCTION
+-- trade_events is append-only with booking time as the designated timestamp: every
+-- booking, amendment and cancel is a new row. "As known at T" filters on booking time
+-- before picking each trade's latest version; "as restated" picks the latest version
+-- known now. The two cells differ by ONE line: WHERE booked_ts <= @asof. That is the
+-- punchline: reconstruction is not a separate system.
+-- Status is filtered after LATEST ON (a WHERE at the same level runs before it, and
+-- a cancelled trade's earlier NEW row would come back). Tenors in this act are as of
+-- @asof (or @t1), not as of today.
+-- =====================================================================================
+
+-- @@ 6a_book_as_known_vs_as_restated
+-- Mark-to-market of the day's deals per book at @asof, as the desk saw them at @asof
+-- versus as the booking log now says they were. The full book is the opening snapshot,
+-- the same on both sides, plus the day's deals; only the deals can be restated, so the
+-- cell values those. Same marks for both, so the difference is purely the bookings.
+-- Views: book_asof and book_restated (SHOW CREATE VIEW both: one line apart),
+-- marks_asof, usd_factor_asof, all at @asof.
+DECLARE @asof := '2026-10-07T12:00:00.000000Z'
+WITH book AS (
+  SELECT 'known' AS view, book, symbol, qty, px FROM energy_book_asof
+  UNION ALL
+  SELECT 'restated' AS view, book, symbol, qty, px FROM energy_book_restated
+),
+v AS (
+  SELECT b.book,
+         sum(CASE WHEN b.view = 'known'    THEN b.qty * (m.price - b.px) * u.factor ELSE 0 END) AS known_usd,
+         sum(CASE WHEN b.view = 'restated' THEN b.qty * (m.price - b.px) * u.factor ELSE 0 END) AS restated_usd,
+         sum(CASE WHEN b.view = 'known'    THEN 1 ELSE 0 END) AS trades_known,
+         sum(CASE WHEN b.view = 'restated' THEN 1 ELSE 0 END) AS trades_restated
+  FROM book b
+  JOIN energy_marks_asof m ON (symbol)
+  JOIN energy_usd_factor_asof u ON (symbol)
+  GROUP BY b.book
+)
+SELECT book,
+       round(known_usd)::decimal(14,0)                  AS mtm_as_known,
+       round(restated_usd)::decimal(14,0)               AS mtm_as_restated,
+       round(restated_usd - known_usd)::decimal(14,0)   AS restatement,
+       trades_known, trades_restated
+FROM v
+ORDER BY abs(restated_usd - known_usd) DESC;
+
+-- @@ 6a_by_symbol
+-- Drill-down of 6a: the same two views per book and contract, with the tenor as of
+-- @asof. The planted restatements (8.3, 8.4, 8.5) sit at the top.
+-- Views: book_asof, book_restated, marks_asof, usd_factor_asof, tenors_asof.
+DECLARE @asof := '2026-10-07T12:00:00.000000Z'
+WITH book AS (
+  SELECT 'known' AS view, book, symbol, qty, px FROM energy_book_asof
+  UNION ALL
+  SELECT 'restated' AS view, book, symbol, qty, px FROM energy_book_restated
+),
+v AS (
+  SELECT b.book, b.symbol,
+         sum(CASE WHEN b.view = 'known'    THEN b.qty ELSE 0 END) AS qty_known,
+         sum(CASE WHEN b.view = 'restated' THEN b.qty ELSE 0 END) AS qty_restated,
+         sum(CASE WHEN b.view = 'known'    THEN b.qty * (m.price - b.px) * u.factor ELSE 0 END) AS known_usd,
+         sum(CASE WHEN b.view = 'restated' THEN b.qty * (m.price - b.px) * u.factor ELSE 0 END) AS restated_usd
+  FROM book b
+  JOIN energy_marks_asof m ON (symbol)
+  JOIN energy_usd_factor_asof u ON (symbol)
+  GROUP BY b.book, b.symbol
+)
+SELECT v.book, v.symbol, tn.tenor AS tenor_at_asof,
+       round(v.qty_known)::decimal(16,0)                    AS qty_as_known,
+       round(v.qty_restated)::decimal(16,0)                 AS qty_as_restated,
+       round(v.known_usd)::decimal(14,0)                    AS mtm_as_known,
+       round(v.restated_usd)::decimal(14,0)                 AS mtm_as_restated,
+       round(v.restated_usd - v.known_usd)::decimal(14,0)   AS restatement
+FROM v
+LEFT JOIN energy_tenors_asof tn ON (symbol)
+ORDER BY abs(v.restated_usd - v.known_usd) DESC;
+
+-- @@ 6b_what_changed_since
+-- Trade by trade: what the restatement is made of. Reveals 8.3 (a fill booked with
+-- 10x the quantity, amended), 8.4 (a broker deal booked twice, duplicate cancelled)
+-- and 8.5 (a voice deal booked five hours late), plus a handful of background
+-- amendments. FULL JOIN on trade_id between the two views.
+-- Views: book_asof, book_restated, tenors_asof.
+DECLARE @asof := '2026-10-07T12:00:00.000000Z'
+WITH changed AS (
+  SELECT coalesce(k.trade_id, r.trade_id)   AS trade_id,
+         coalesce(k.book, r.book)           AS book,
+         coalesce(k.symbol, r.symbol)       AS symbol,
+         coalesce(r.channel, k.channel)     AS channel,
+         k.qty                              AS qty_as_known,
+         r.qty                              AS qty_as_restated,
+         k.px                               AS px_as_known,
+         r.px                               AS px_as_restated,
+         CASE WHEN k.trade_id IS NULL THEN 'booked late'
+              WHEN r.trade_id IS NULL THEN 'cancelled since'
+              ELSE 'amended since' END      AS what_changed,
+         r.reason,
+         coalesce(r.booked_ts, k.booked_ts) AS last_booking
+  FROM energy_book_asof k
+  FULL JOIN energy_book_restated r ON k.trade_id = r.trade_id
+  WHERE k.trade_id IS NULL OR r.trade_id IS NULL OR k.qty != r.qty OR k.px != r.px OR k.book != r.book
+)
+SELECT c.trade_id, c.book, c.symbol, tn.tenor AS tenor_at_asof, c.channel,
+       c.qty_as_known, c.qty_as_restated, c.px_as_known, c.px_as_restated,
+       c.what_changed, c.reason, c.last_booking
+FROM changed c
+LEFT JOIN energy_tenors_asof tn ON (symbol)
+ORDER BY abs(coalesce(c.qty_as_restated, 0) - coalesce(c.qty_as_known, 0)) DESC;
+
+-- @@ 6c_pnl_forensics_t1_to_t2
+-- Why did the value of the day's trades change between @t1 and @t2? Market moves on
+-- the @t1 book, new trades, late bookings, amendments and cancellations, in USD. The
+-- five columns add up to total_change for every book, so nothing is unexplained. Both
+-- books are the bookings of @t1's trading day, as known at each time.
+DECLARE @t1 := '2026-10-07T12:00:00.000000Z', @t2 := '2026-10-07T15:00:00.000000Z'
+WITH b1 AS (
+  (SELECT * FROM energy_trade_events WHERE booked_ts >= timestamp_floor('d', @t1::timestamp) AND booked_ts <= @t1 LATEST ON booked_ts PARTITION BY trade_id)
+  WHERE status != 'CANCELLED' AND trade_ts >= timestamp_floor('d', @t1::timestamp) AND trade_ts <= @t1
+),
+b2 AS (
+  (SELECT * FROM energy_trade_events WHERE booked_ts >= timestamp_floor('d', @t1::timestamp) AND booked_ts <= @t2 LATEST ON booked_ts PARTITION BY trade_id)
+  WHERE status != 'CANCELLED' AND trade_ts >= timestamp_floor('d', @t1::timestamp) AND trade_ts <= @t2
+),
+both AS (
+  SELECT coalesce(b1.book, b2.book) AS book, coalesce(b1.symbol, b2.symbol) AS symbol,
+         b1.qty AS q1, b1.px AS p1, b2.qty AS q2, b2.px AS p2, b2.trade_ts AS ts2
+  FROM b1 FULL JOIN b2 ON b1.trade_id = b2.trade_id
+),
+m1 AS (SELECT symbol, price FROM energy_curve_marks WHERE ts <= @t1 AND ts > dateadd('m', -5, @t1) LATEST ON ts PARTITION BY symbol),
+m2 AS (SELECT symbol, price FROM energy_curve_marks WHERE ts <= @t2 AND ts > dateadd('m', -5, @t2) LATEST ON ts PARTITION BY symbol),
+f1 AS (SELECT symbol, mid(bid, ask) AS usd FROM energy_quotes
+       WHERE curve = 'FX' AND ts <= @t1 AND ts > dateadd('h', -1, @t1) LATEST ON ts PARTITION BY symbol),
+f2 AS (SELECT symbol, mid(bid, ask) AS usd FROM energy_quotes
+       WHERE curve = 'FX' AND ts <= @t2 AND ts > dateadd('h', -1, @t2) LATEST ON ts PARTITION BY symbol),
+x AS (
+  SELECT t.book, t.q1, t.p1, t.q2, t.p2, t.ts2, a.price AS m1, b.price AS m2,
+         c.px_factor * coalesce(u1.usd, 1.0) AS k1, c.px_factor * coalesce(u2.usd, 1.0) AS k2
+  FROM both t
+  JOIN m1 a ON a.symbol = t.symbol
+  JOIN m2 b ON b.symbol = t.symbol
+  JOIN energy_instruments c ON c.symbol = t.symbol
+  LEFT JOIN f1 u1 ON u1.symbol = c.fx_symbol
+  LEFT JOIN f2 u2 ON u2.symbol = c.fx_symbol
+)
+SELECT book,
+       round(sum(CASE WHEN q1 IS NOT NULL THEN q1 * ((m2 - p1) * k2 - (m1 - p1) * k1) ELSE 0 END))::decimal(14,0)                       AS market_move,
+       round(sum(CASE WHEN q1 IS NULL AND ts2 > @t1 THEN q2 * (m2 - p2) * k2 ELSE 0 END))::decimal(14,0)                              AS new_trades,
+       round(sum(CASE WHEN q1 IS NULL AND ts2 <= @t1 THEN q2 * (m2 - p2) * k2 ELSE 0 END))::decimal(14,0)                             AS late_bookings,
+       round(sum(CASE WHEN q1 IS NOT NULL AND q2 IS NOT NULL THEN (q2 * (m2 - p2) - q1 * (m2 - p1)) * k2 ELSE 0 END))::decimal(14,0)  AS amendments,
+       round(sum(CASE WHEN q2 IS NULL THEN -q1 * (m2 - p1) * k2 ELSE 0 END))::decimal(14,0)                                           AS cancellations,
+       round(sum(CASE WHEN q2 IS NOT NULL THEN q2 * (m2 - p2) * k2 ELSE 0 END)
+             - sum(CASE WHEN q1 IS NOT NULL THEN q1 * (m1 - p1) * k1 ELSE 0 END))::decimal(14,0)                                      AS total_change
+FROM x
+GROUP BY book
+ORDER BY book;
+
+-- @@ 6c_by_symbol
+-- Drill-down of 6c: the same decomposition per book and contract (tenor as of @t1),
+-- largest total change first. The columns still add up to total_change on every row.
+DECLARE @t1 := '2026-10-07T12:00:00.000000Z', @t2 := '2026-10-07T15:00:00.000000Z'
+WITH b1 AS (
+  (SELECT * FROM energy_trade_events WHERE booked_ts >= timestamp_floor('d', @t1::timestamp) AND booked_ts <= @t1 LATEST ON booked_ts PARTITION BY trade_id)
+  WHERE status != 'CANCELLED' AND trade_ts >= timestamp_floor('d', @t1::timestamp) AND trade_ts <= @t1
+),
+b2 AS (
+  (SELECT * FROM energy_trade_events WHERE booked_ts >= timestamp_floor('d', @t1::timestamp) AND booked_ts <= @t2 LATEST ON booked_ts PARTITION BY trade_id)
+  WHERE status != 'CANCELLED' AND trade_ts >= timestamp_floor('d', @t1::timestamp) AND trade_ts <= @t2
+),
+both AS (
+  SELECT coalesce(b1.book, b2.book) AS book, coalesce(b1.symbol, b2.symbol) AS symbol,
+         b1.qty AS q1, b1.px AS p1, b2.qty AS q2, b2.px AS p2, b2.trade_ts AS ts2
+  FROM b1 FULL JOIN b2 ON b1.trade_id = b2.trade_id
+),
+m1 AS (SELECT symbol, price FROM energy_curve_marks WHERE ts <= @t1 AND ts > dateadd('m', -5, @t1) LATEST ON ts PARTITION BY symbol),
+m2 AS (SELECT symbol, price FROM energy_curve_marks WHERE ts <= @t2 AND ts > dateadd('m', -5, @t2) LATEST ON ts PARTITION BY symbol),
+f1 AS (SELECT symbol, mid(bid, ask) AS usd FROM energy_quotes
+       WHERE curve = 'FX' AND ts <= @t1 AND ts > dateadd('h', -1, @t1) LATEST ON ts PARTITION BY symbol),
+f2 AS (SELECT symbol, mid(bid, ask) AS usd FROM energy_quotes
+       WHERE curve = 'FX' AND ts <= @t2 AND ts > dateadd('h', -1, @t2) LATEST ON ts PARTITION BY symbol),
+tn AS (
+  SELECT symbol, curve, granularity,
+         granularity || row_number() OVER (PARTITION BY curve, granularity ORDER BY delivery_start) AS tenor_at_t1
+  FROM energy_instruments
+  WHERE expiry > @t1
+),
+x AS (
+  SELECT t.book, t.symbol, t.q1, t.p1, t.q2, t.p2, t.ts2, a.price AS m1, b.price AS m2,
+         c.px_factor * coalesce(u1.usd, 1.0) AS k1, c.px_factor * coalesce(u2.usd, 1.0) AS k2
+  FROM both t
+  JOIN m1 a ON a.symbol = t.symbol
+  JOIN m2 b ON b.symbol = t.symbol
+  JOIN energy_instruments c ON c.symbol = t.symbol
+  LEFT JOIN f1 u1 ON u1.symbol = c.fx_symbol
+  LEFT JOIN f2 u2 ON u2.symbol = c.fx_symbol
+),
+s AS (
+  SELECT book, symbol,
+         sum(CASE WHEN q1 IS NOT NULL THEN q1 * ((m2 - p1) * k2 - (m1 - p1) * k1) ELSE 0 END)                       AS market_move,
+         sum(CASE WHEN q1 IS NULL AND ts2 > @t1 THEN q2 * (m2 - p2) * k2 ELSE 0 END)                              AS new_trades,
+         sum(CASE WHEN q1 IS NULL AND ts2 <= @t1 THEN q2 * (m2 - p2) * k2 ELSE 0 END)                             AS late_bookings,
+         sum(CASE WHEN q1 IS NOT NULL AND q2 IS NOT NULL THEN (q2 * (m2 - p2) - q1 * (m2 - p1)) * k2 ELSE 0 END)  AS amendments,
+         sum(CASE WHEN q2 IS NULL THEN -q1 * (m2 - p1) * k2 ELSE 0 END)                                           AS cancellations,
+         sum(CASE WHEN q2 IS NOT NULL THEN q2 * (m2 - p2) * k2 ELSE 0 END)
+           - sum(CASE WHEN q1 IS NOT NULL THEN q1 * (m1 - p1) * k1 ELSE 0 END)                                    AS total_change
+  FROM x
+  GROUP BY book, symbol
+)
+SELECT s.book, s.symbol, tn.tenor_at_t1,
+       round(s.market_move)::decimal(14,0)    AS market_move,
+       round(s.new_trades)::decimal(14,0)     AS new_trades,
+       round(s.late_bookings)::decimal(14,0)  AS late_bookings,
+       round(s.amendments)::decimal(14,0)     AS amendments,
+       round(s.cancellations)::decimal(14,0)  AS cancellations,
+       round(s.total_change)::decimal(14,0)   AS total_change
+FROM s
+LEFT JOIN tn ON (symbol)
+ORDER BY abs(s.total_change) DESC;
+
+-- @@ 6d_booking_latency_by_channel
+-- How long a deal takes to reach the book, by channel: STP mirrors exchange fills in
+-- milliseconds, broker deals take minutes, bilateral deals hours. The 5h20m outlier
+-- is 8.5. Governance angle: this is the data-quality monitor for trade capture.
+DECLARE @demo_day := '2026-10-07'
+WITH b AS (
+  SELECT channel, (booked_ts - trade_ts) / 60000000.0 AS latency_min
+  FROM energy_trade_events
+  WHERE version = 1 AND booked_ts IN @demo_day
+)
+SELECT channel,
+       count()                                                     AS bookings,
+       round(avg(latency_min), 2)::decimal(10,2)                   AS avg_min,
+       round(approx_percentile(latency_min, 0.5, 2), 2)::decimal(10,2) AS p50_min,
+       round(approx_percentile(latency_min, 0.95, 2), 2)::decimal(10,2) AS p95_min,
+       round(max(latency_min), 2)::decimal(10,2)                   AS max_min
+FROM b
+GROUP BY channel
+ORDER BY avg_min;
+
+-- @@ 6d_by_symbol
+-- Drill-down of 6d: booking latency by channel and contract, slowest first. Voice
+-- deals in strips and back months are where the late bookings live; 8.5 is the
+-- UK power season at the top.
+DECLARE @demo_day := '2026-10-07'
+WITH b AS (
+  SELECT channel, symbol, (booked_ts - trade_ts) / 60000000.0 AS latency_min
+  FROM energy_trade_events
+  WHERE version = 1 AND booked_ts IN @demo_day
+),
+s AS (
+  SELECT channel, symbol, count() AS bookings, avg(latency_min) AS avg_min, max(latency_min) AS max_min
+  FROM b
+  GROUP BY channel, symbol
+)
+SELECT s.channel, s.symbol, t.tenor, s.bookings,
+       round(s.avg_min, 2)::decimal(10,2) AS avg_min,
+       round(s.max_min, 2)::decimal(10,2) AS max_min
+FROM s
+LEFT JOIN energy_tenors t ON (symbol)
+ORDER BY s.max_min DESC;
+
+
+-- @@ 6e_margin_by_ccp
+-- Where the margin calls come from: gross and net notional per book and clearing
+-- house in USD, from the opening book plus today's fills on each venue, at the
+-- latest marks. Positions from broker and bilateral deals sit under BILATERAL.
+-- Views: marks_asof, usd_factor_asof.
+DECLARE @demo_day := '2026-10-07', @asof := dateadd('d', 1, @demo_day::timestamp) - 1
+WITH pos AS (
+  SELECT book, symbol, venue, sum(qty) AS qty
+  FROM (
+    SELECT book, symbol, venue, qty FROM energy_position_snapshots WHERE ts = @demo_day::timestamp
+    UNION ALL
+    SELECT book, symbol, venue, qty FROM energy_fills WHERE ts IN @demo_day
+  )
+  GROUP BY book, symbol, venue
+),
+n AS (
+  SELECT p.book, coalesce(l.ccp, 'BILATERAL') AS ccp, p.qty * m.price * u.factor AS notional
+  FROM pos p
+  JOIN energy_marks_asof m ON m.symbol = p.symbol
+  JOIN energy_usd_factor_asof u ON u.symbol = p.symbol
+  LEFT JOIN energy_listings l ON l.symbol = p.symbol AND l.exchange = p.venue
+)
+SELECT book, ccp,
+       round(sum(abs(notional)))::decimal(16,0) AS gross_notional_usd,
+       round(sum(notional))::decimal(16,0)      AS net_notional_usd,
+       count()                                  AS positions
+FROM n
+GROUP BY book, ccp
+ORDER BY book, gross_notional_usd DESC;
+
+
+-- =====================================================================================
+-- ACT 7 · PRICING MODEL VALIDATION
+-- Continuous evidence that the fair-value model agrees with the market: bias, RMSE
+-- and the share of model prices inside the live bid-ask, champion versus challenger,
+-- drift over time, no-arbitrage checks on the vol surface, and whether the grading
+-- itself trusted stale quotes. Errors in bps so curves are comparable.
+-- =====================================================================================
+
+-- @@ 7a_champion_vs_challenger
+-- Every model price is graded against the quote at that instant, with a tolerance:
+-- never grade a model against a stale quote. Reveals 8.6: after the cold-snap
+-- repricing the champion is biased on winter months; the challenger refit within the
+-- hour, so its RMSE carries that one hour and its bias does not. Graded on the first
+-- 12 delivery months, where the quotes are liquid, split into before and after the
+-- repricing so the headline is not diluted by the morning. A minute with no quote is
+-- counted, not graded. 7d does the tight-tolerance version on raw ticks around the outage.
+-- Views: model_graded_day (each model price against the last quote of the preceding
+-- 1-minute bar, the ASOF match with a one-minute tolerance at a fraction of the cost).
+DECLARE @demo_day := '2026-10-07', @day := @demo_day, @repricing := '2026-10-07T11:00:00.000000Z'
+SELECT model_version,
+       CASE WHEN ts < @repricing THEN '1_before' ELSE '2_after' END AS period,
+       season,
+       count(bid)                                          AS graded,
+       count() - count(bid)                                AS not_graded_no_quote,
+       round(avg(err_bps), 1)::decimal(8,1)                AS bias_bps,
+       round(sqrt(avg(err_bps * err_bps)), 1)::decimal(8,1) AS rmse_bps,
+       round(100.0 * sum(CASE WHEN model_px >= bid AND model_px <= ask THEN 1 ELSE 0 END) / count(bid), 1)::decimal(5,1) AS pct_inside_quote
+FROM energy_model_graded_day
+WHERE delivery_start < dateadd('M', 13, @demo_day::timestamp)
+GROUP BY model_version, period, season
+ORDER BY model_version, period, season;
+
+-- @@ 7a_by_tenor
+-- The same grading by relative tenor (gas and power months M1 to M12 pooled across
+-- curves): after the repricing the champion's error is concentrated in the winter
+-- tenors (M1 to M4, November to February) and fades along the curve; summer tenors
+-- and the challenger stay clean.
+-- Views: model_graded_day.
+DECLARE @demo_day := '2026-10-07', @day := @demo_day, @repricing := '2026-10-07T11:00:00.000000Z'
+SELECT model_version,
+       CASE WHEN ts < @repricing THEN '1_before' ELSE '2_after' END AS period,
+       tenor, season,
+       count(bid)                                           AS graded,
+       round(avg(err_bps), 1)::decimal(8,1)                 AS bias_bps,
+       round(sqrt(avg(err_bps * err_bps)), 1)::decimal(8,1) AS rmse_bps
+FROM energy_model_graded_day
+WHERE granularity = 'M' AND tenor_n <= 12
+GROUP BY model_version, period, tenor, tenor_n, season
+ORDER BY model_version, period, tenor_n;
+
+-- @@ 7a_by_symbol
+-- Drill-down of 7a: bias and RMSE per contract after the repricing, worst first. The
+-- top of the list is the champion on the front winter months of TTF, NBP and power.
+-- Views: model_graded_day.
+DECLARE @demo_day := '2026-10-07', @day := @demo_day, @repricing := '2026-10-07T11:00:00.000000Z'
+WITH s AS (
+  SELECT model_version, symbol, tenor, exchange_symbol, count() AS graded,
+         avg(err_bps) AS bias, sqrt(avg(err_bps * err_bps)) AS rmse
+  FROM energy_model_graded_day
+  WHERE ts >= @repricing AND bid IS NOT NULL AND granularity = 'M' AND tenor_n <= 12
+  GROUP BY model_version, symbol, tenor, exchange_symbol
+)
+SELECT model_version, symbol, tenor, exchange_symbol, graded,
+       round(bias, 1)::decimal(8,1) AS bias_bps,
+       round(rmse, 1)::decimal(8,1) AS rmse_bps
+FROM s
+ORDER BY abs(bias) DESC;
+
+-- @@ 7b_model_drift
+-- Chart: hourly bias on winter gas and power contracts, champion against challenger.
+-- The champion breaks at 11:00 on the demo day and never recovers; the challenger is
+-- back within a few bps after its next hourly refit.
+-- Graded against the last quote of the previous 1-minute bar (the quotes_1m
+-- materialized view), which is the ASOF match with a one-minute tolerance at a
+-- fraction of the cost over two days of tick data.
+DECLARE @demo_day := '2026-10-07'
+WITH m AS (
+  SELECT ts, dateadd('m', -1, ts) AS bar_ts, model_version, symbol, model_px
+  FROM energy_model_prices
+  WHERE ts >= dateadd('d', -1, @demo_day::timestamp)
+),
+v AS (
+  SELECT m.ts, m.model_version, 10000 * (m.model_px - mid(b.last_bid, b.last_ask)) / mid(b.last_bid, b.last_ask) AS err_bps
+  FROM m
+  JOIN energy_instruments c ON c.symbol = m.symbol
+  JOIN (SELECT ts, symbol, last_bid, last_ask FROM energy_quotes_1m
+        WHERE ts >= dateadd('m', -1, dateadd('d', -1, @demo_day::timestamp))) b ON b.symbol = m.symbol AND b.ts = m.bar_ts
+  WHERE month(c.delivery_start) IN (11, 12, 1, 2) AND c.delivery_start < dateadd('M', 13, @demo_day::timestamp)
+)
+SELECT ts,
+       round(avg(CASE WHEN model_version = 'champion_v1' THEN err_bps END), 1)::decimal(8,1)   AS champion_bias_bps,
+       round(avg(CASE WHEN model_version = 'challenger_v2' THEN err_bps END), 1)::decimal(8,1) AS challenger_bias_bps
+FROM v
+SAMPLE BY 1h;
+
+-- @@ 7c_vol_surface_calendar_arbitrage
+-- Total implied variance iv^2 * tau must not fall with expiry at a fixed delta. Checked
+-- on every 5-minute surface of the day as published (version 1). Reveals 8.7: one
+-- bad ATM mark on a TTF month for 20 minutes. 7c_as_corrected shows the fix.
+DECLARE @demo_day := '2026-10-07'
+WITH w AS (
+  SELECT ts, curve, symbol, delta_bucket, iv * iv * tau AS total_var,
+         lag(iv * iv * tau) OVER (PARTITION BY ts, curve, delta_bucket ORDER BY tau) AS prev_total_var
+  FROM energy_iv_marks
+  WHERE ts IN @demo_day AND version = 1
+),
+v AS (
+  SELECT curve, symbol, delta_bucket, min(ts) AS first_seen, max(ts) AS last_seen, count() AS violations
+  FROM w
+  WHERE total_var < prev_total_var
+  GROUP BY curve, symbol, delta_bucket
+)
+SELECT v.curve, v.symbol, t.tenor, t.exchange_symbol, v.delta_bucket, v.first_seen, v.last_seen, v.violations
+FROM v
+LEFT JOIN energy_tenors t ON (symbol)
+ORDER BY v.first_seen;
+
+-- @@ 7c_as_corrected
+-- The same check on the latest version of every mark: the version 2 corrections at
+-- the same ts replace the bad marks and the surface is arbitrage-free again.
+DECLARE @demo_day := '2026-10-07'
+WITH latest AS (
+  SELECT ts, curve, symbol, delta_bucket, tau, iv FROM energy_iv_marks
+  WHERE ts IN @demo_day
+  LATEST ON ts PARTITION BY ts, symbol, delta_bucket
+),
+w AS (
+  SELECT ts, curve, symbol, delta_bucket, iv * iv * tau AS total_var,
+         lag(iv * iv * tau) OVER (PARTITION BY ts, curve, delta_bucket ORDER BY tau) AS prev_total_var
+  FROM latest
+),
+v AS (
+  SELECT curve, symbol, delta_bucket, min(ts) AS first_seen, max(ts) AS last_seen, count() AS violations
+  FROM w
+  WHERE total_var < prev_total_var
+  GROUP BY curve, symbol, delta_bucket
+)
+SELECT v.curve, v.symbol, t.tenor, t.exchange_symbol, v.delta_bucket, v.first_seen, v.last_seen, v.violations
+FROM v
+LEFT JOIN energy_tenors t ON (symbol)
+ORDER BY v.first_seen;
+
+-- @@ 7d_stale_quote_coverage
+-- One venue went dark, the instrument did not. Minute by minute around the planted feed
+-- outage (8.9), for the front month of each dual-listed curve: ticks on the primary
+-- venue and on EEX, the curve mark's source and the venue it came from, and how many
+-- model prices could be graded against a fresh quote (ASOF JOIN with a 10-second
+-- TOLERANCE returns null rather than a stale quote). EEX drops to zero for three
+-- minutes; the primary keeps ticking, marks stay MARKET from it, grading never stops.
+DECLARE @demo_day := '2026-10-07', @outage_start := '2026-10-07T10:00:00.000000Z', @outage_end := '2026-10-07T10:03:00.000000Z'
+WITH fronts AS (
+  SELECT symbol, curve, primary_exchange FROM energy_tenors
+  WHERE curve IN ('TTF', 'EUA', 'UKPWR') AND tenor IN ('M1', 'Z1')
+),
+ticks AS (
+  SELECT ts, symbol,
+         sum(CASE WHEN source = 'EEX' THEN 0 ELSE 1 END) AS primary_ticks,
+         sum(CASE WHEN source = 'EEX' THEN 1 ELSE 0 END) AS eex_ticks
+  FROM energy_quotes
+  WHERE ts >= dateadd('m', -3, @outage_start) AND ts < dateadd('m', 4, @outage_end)
+    AND curve IN ('TTF', 'EUA', 'UKPWR')
+  SAMPLE BY 1m
+),
+marks AS (
+  SELECT ts, symbol, source AS mark_source, venue AS mark_venue FROM energy_curve_marks
+  WHERE ts >= dateadd('m', -3, @outage_start) AND ts < dateadd('m', 4, @outage_end) AND version = 1
+    AND curve IN ('TTF', 'EUA', 'UKPWR')
+),
+graded AS (
+  SELECT m.ts, m.symbol, count() AS model_rows, count(q.bid) AS graded
+  FROM energy_model_prices m
+  ASOF JOIN (energy_quotes WHERE ts >= dateadd('m', -4, @outage_start) AND ts < dateadd('m', 4, @outage_end)) q ON (symbol) TOLERANCE 10s
+  WHERE m.model_version = 'champion_v1' AND m.curve IN ('TTF', 'UKPWR')
+    AND m.ts >= dateadd('m', -3, @outage_start) AND m.ts < dateadd('m', 4, @outage_end)
+  SAMPLE BY 1m
+)
+SELECT k.ts, k.symbol, f.primary_exchange, k.primary_ticks, k.eex_ticks,
+       mk.mark_source, mk.mark_venue, g.model_rows, g.graded
+FROM ticks k
+JOIN fronts f ON f.symbol = k.symbol
+LEFT JOIN marks mk ON mk.ts = k.ts AND mk.symbol = k.symbol
+LEFT JOIN graded g ON g.ts = k.ts AND g.symbol = k.symbol
+ORDER BY k.ts, k.symbol;
+
