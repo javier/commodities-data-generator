@@ -1,7 +1,7 @@
 # Energy Trading Desk dashboard
 
 One Grafana dashboard for the live session, built on the plain views the generator
-creates (see "Views" in `../README.md`). Every panel is as of the right edge of the time
+creates (see "Views" in `../../README.md`). Every panel is as of the right edge of the time
 range: leave the range at "Last 6 hours" with auto-refresh for the live desk, or drag its
 end into the past and the whole dashboard shows the desk as it stood then.
 

@@ -24,9 +24,9 @@ act something to find. Everything is generic: no real desk, no real names.
 | `check.py` | Smoke test: runs every cell and prints `ok` with row count and timing, or `FAIL`; `--dump` and `--compare` check a change against a saved run |
 | `energy_backfill.sh`, `energy_realtime.sh` | Local runners (QuestDB OSS on `127.0.0.1:9000`) |
 | `energy_enterprise_backfill.sh`, `energy_enterprise_realtime.sh` | Cluster runners (QWP over TLS, token auth, VPC-internal endpoints) |
-| `energy_wipe.py` | Drops the whole dataset for one prefix, after you type YES |
+| `energy_wipe.py` | Wipes the dataset for one prefix after you type YES: drops the views, truncates (default) or drops the tables |
 | `requirements.txt` | `questdb[dataframe]>=5.0`, numpy, pandas, yfinance |
-| `grafana/` | The Energy Trading Desk dashboard for the live session, its README and a screenshot |
+| `dashboards/` | The same desk as a Grafana dashboard (`grafana/`) and as a QuestDB Web Console notebook (`questdb_console/`), each with its README and a screenshot |
 
 Tested end to end on QuestDB 10.0.1 (the `questdb/questdb:10.0.1` image) and on a
 10.0.2 snapshot, both OSS, with Python 3.12. Transport is QWP
@@ -639,17 +639,27 @@ is slower on the tick-level cells while the quote pages come in (here `1c` took 
 s), so run `check.py` once before the session. On the cluster expect the same shape with
 slower cold runs on a gp3 volume.
 
-## Dashboard
+## Dashboards
 
-[`grafana/energy_desk_dashboard.json`](grafana/energy_desk_dashboard.json) is one Grafana
-dashboard on the same views: intraday PnL with drawdown, the blotter and limit
+Two versions of the same desk view live in [`dashboards/`](dashboards/README.md).
+
+[`dashboards/grafana/energy_desk_dashboard.json`](dashboards/grafana/energy_desk_dashboard.json)
+is one Grafana dashboard on the same views: intraday PnL with drawdown, the blotter and limit
 utilisation, the curve's evolution and its shape against settlement, the book as known
 versus as restated, and a PnL explain. Every panel is as of the right edge of the time
 range, so the same dashboard is the live desk at "Last 6 hours" and the reconstruction
 when the range ends in the past. Import steps, the plugin macros and the two demo moves
-are in the [dashboard README](grafana/README.md).
+are in the [Grafana README](dashboards/grafana/README.md).
 
-![Energy Trading Desk dashboard](grafana/screenshot.png)
+![Energy Trading Desk dashboard in Grafana](dashboards/grafana/screenshot.png)
+
+[`dashboards/questdb_console/energy_trading_notebook.json`](dashboards/questdb_console/energy_trading_notebook.json)
+is the same desk as a QuestDB Web Console notebook, loaded with **Import tabs** from the
+console's tab menu. It has seven of the eight panels (no curve evolution heatmap) and
+takes its as-of instant, book and curve from notebook variables; the differences are in
+the [notebook README](dashboards/questdb_console/README.md).
+
+![Energy Trading Dashboard notebook in the QuestDB Web Console](dashboards/questdb_console/screenshot.png)
 
 ## Simplifications to be upfront about
 
