@@ -143,10 +143,12 @@ with the prefix is listed and left alone. `--keep_state_file true` keeps the sta
   policies are Enterprise-specific and sit behind `--enterprise`.
 - Nothing is updated in place. A corrected mark is a new row with the same `ts` and
   `version + 1`; a trade amendment or cancel is a new row in the booking log.
-- Partitioning: HOUR for `quotes`, DAY for minute-level and trade tables, WEEK for the
-  small daily ones (settlements, day-ahead prices, snapshots, the daily and hourly bars),
-  YEAR for the lookup tables. A TTL must be a whole multiple of the partition unit, and a
-  week takes both 7 days and 3 months.
+- Partitioning: HOUR for every time-series table, so each partition can go to object
+  storage an hour after it closes (a storage policy stage, like a TTL, must be a whole
+  multiple of the partition size); YEAR for the lookup tables. Materialized views take no
+  storage policy and keep their own: DAY for the 10-second, 1-minute and 5-minute bars,
+  WEEK for the daily bars and the hourly curve marks, which takes both 7 days and 3
+  months.
 - Retention, on every time-series table and materialized view, never on the lookup tables
   (their rows carry the epoch, so any threshold would drop them):
 
@@ -154,19 +156,15 @@ with the prefix is listed and left alone. `--keep_state_file true` keeps the sta
   |---|---|---|
   | OSS | `TTL 3 MONTHS` | `TTL 3 MONTHS` |
   | OSS, `--short_ttl` | `TTL 7 DAYS` | `TTL 7 DAYS` |
-  | Enterprise | `STORAGE POLICY(TO REMOTE <p>, TO PARQUET <q>, DROP LOCAL 3 months)` | `TTL 3 MONTHS`, `quotes_10s` `TTL 1 MONTH` |
-  | Enterprise, `--short_ttl` | `STORAGE POLICY(TO REMOTE <p>, TO PARQUET <q>, DROP LOCAL 7 days, DROP REMOTE 7 days)` | `TTL 7 DAYS` |
-
-  Each stage of a storage policy must be a whole multiple of the table's partition size,
-  so the early stages follow it: `quotes` (HOUR) `TO REMOTE 1 hour, TO PARQUET 2 days`,
-  the DAY tables `TO REMOTE 1 day, TO PARQUET 2 days`, the WEEK tables
-  `TO REMOTE 1 week, TO PARQUET 1 week`.
+  | Enterprise | `STORAGE POLICY(TO REMOTE 1 hour, TO PARQUET 7 days, DROP LOCAL 3 months)` | `TTL 3 MONTHS`, `quotes_10s` `TTL 1 MONTH` |
+  | Enterprise, `--short_ttl` | `STORAGE POLICY(TO REMOTE 1 hour, TO PARQUET 3 days, DROP LOCAL 7 days, DROP REMOTE 7 days)` | `TTL 7 DAYS` |
 
   On Enterprise the policy tiers partitions to Parquet and object storage and keeps them
   queryable; only `--short_ttl` deletes the remote copy. Materialized views do not take
   storage policies, so they keep a TTL. Backfilled partitions are already older than the
-  policy's first thresholds, so they move to Parquet and object storage within minutes of
-  being written; that is the cold storage working, not data loss. Keep a `--short_ttl`
+  policy's first threshold, so they go to object storage within minutes of being written
+  (and any more than a week old to Parquet, three days with `--short_ttl`); that is the
+  cold storage working, not data loss. Keep a `--short_ttl`
   backfill window under 7 days: older partitions are dropped as soon as they are written.
   The clause sits after `PARTITION BY` and before `WAL`, the only placement the parser
   accepts. It applies when a table is created: an existing table keeps its retention, so
