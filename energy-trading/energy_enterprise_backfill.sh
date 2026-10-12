@@ -24,12 +24,13 @@
 # by name, then run this: the generator refuses to write into a table whose
 # schema differs from its own.
 #
-# Every table is WAL with per-column Parquet encodings, so the cluster's storage
-# policy produces compact cold partitions. NOTE ON RETENTION: --short_ttl is
-# deliberately NOT set. This is a demo dataset for dates already in the past, so
-# any retention threshold (storage policy here, TTL on OSS) would fire against it
-# immediately. Without the flag no retention clause is emitted and the data
-# simply persists; tiering is then a matter of the cluster's own policies.
+# Every table is WAL with per-column Parquet encodings. With --enterprise the
+# time-series tables take a storage policy: TO REMOTE 1 hour, TO PARQUET 2 days,
+# DROP LOCAL 3 months, so backfilled partitions (already days old) move to Parquet
+# and object storage within minutes and stay queryable. Materialized views keep a
+# TTL (3 months, the 10-second bars 1 month). Add --short_ttl true to keep
+# everything for 7 days only, remote copies included; then keep the backfill
+# window under 7 days.
 #
 # This is a CORRECTNESS run, not a throughput run. The scale factor is kept
 # modest on purpose for the gp3 volume: 0.5 is roughly 35M quotes a weekday, which is

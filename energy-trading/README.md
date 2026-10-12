@@ -84,8 +84,8 @@ workers mostly buys O3 merge work, not speed.
 --tables a,b,c          create and populate only these base tables
 --create_views / --create_live_view / --create_plain_views   default true
 --parquet_encodings false   plain column types for a server that rejects PARQUET(...)
---enterprise true       with --short_ttl: STORAGE POLICY on tables instead of TTL
---short_ttl true        retention clauses (off for demo data in the past)
+--enterprise true       tables take a STORAGE POLICY (cold storage) instead of a TTL
+--short_ttl true        keep everything 7 days instead of 3 months
 --static_anchors true   skip Yahoo, use FALLBACK_BRACKETS
 --winter_repricing_pct  size of the planted cold-snap repricing at the front (default 8)
 --seed                  everything is deterministic given the seed and the window
@@ -143,9 +143,30 @@ with the prefix is listed and left alone. `--keep_state_file true` keeps the sta
   policies are Enterprise-specific and sit behind `--enterprise`.
 - Nothing is updated in place. A corrected mark is a new row with the same `ts` and
   `version + 1`; a trade amendment or cancel is a new row in the booking log.
-- Partitioning: HOUR for `quotes`, DAY for minute-level and trade tables, MONTH and YEAR
-  for the slow ones. Retention (`--short_ttl`) is placed after `PARTITION BY` and before
-  `WAL`, the only placement the parser accepts, and never on the lookup tables.
+- Partitioning: HOUR for `quotes`, DAY for minute-level and trade tables, WEEK for the
+  small daily ones (settlements, day-ahead prices, snapshots, the daily and hourly bars),
+  YEAR for the lookup tables. A TTL must be a whole multiple of the partition unit, and a
+  week takes both 7 days and 3 months.
+- Retention, on every time-series table and materialized view, never on the lookup tables
+  (their rows carry the epoch, so any threshold would drop them):
+
+  | | Tables | Materialized views |
+  |---|---|---|
+  | OSS | `TTL 3 MONTHS` | `TTL 3 MONTHS` |
+  | OSS, `--short_ttl` | `TTL 7 DAYS` | `TTL 7 DAYS` |
+  | Enterprise | `STORAGE POLICY(TO REMOTE 1 hour, TO PARQUET 2 days, DROP LOCAL 3 months)` | `TTL 3 MONTHS`, `quotes_10s` `TTL 1 MONTH` |
+  | Enterprise, `--short_ttl` | `STORAGE POLICY(TO REMOTE 1 hour, TO PARQUET 2 days, DROP LOCAL 7 days, DROP REMOTE 7 days)` | `TTL 7 DAYS` |
+
+  On Enterprise the policy tiers partitions to Parquet and object storage and keeps them
+  queryable; only `--short_ttl` deletes the remote copy. Materialized views do not take
+  storage policies, so they keep a TTL. Backfilled partitions are already older than the
+  policy's first thresholds, so they move to Parquet and object storage within minutes of
+  being written; that is the cold storage working, not data loss. Keep a `--short_ttl`
+  backfill window under 7 days: older partitions are dropped as soon as they are written.
+  The clause sits after `PARTITION BY` and before `WAL`, the only placement the parser
+  accepts. It applies when a table is created: an existing table keeps its retention, so
+  change it with `ALTER TABLE ... SET STORAGE POLICY` (or `SET TTL` on OSS), or wipe and
+  reload.
 - `quotes` and `fills` use `TIMESTAMP_NS`; everything else `TIMESTAMP`. Do not subtract
   the two in SQL (`datediff` is unit-safe, raw `-` is not).
 - A table that exists with a different schema is a hard error, not something the

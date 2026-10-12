@@ -10,8 +10,8 @@
 # load in about 90 seconds on a laptop. Use 0.2 for a quick functional check.
 # Fill rates scale with the same factor.
 #
-# No --short_ttl: the data is in the past and any retention threshold would
-# fire against it immediately.
+# Retention is TTL 3 MONTHS on every time-series table and materialized view;
+# add --short_ttl true for 7 days.
 set -euo pipefail
 
 cd "$(dirname "$0")"

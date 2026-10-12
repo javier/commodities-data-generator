@@ -607,25 +607,37 @@ def bool_arg(x) -> bool:
 # QWP connection
 # ----------------------------
 
-# Retention differs by edition and by object kind: tables take a STORAGE POLICY
-# on Enterprise and a TTL on OSS, materialized views take a TTL on both (storage
-# policies are rejected on views). Nothing is emitted unless --short_ttl is set,
-# because the demo data sits in the past and any threshold would fire at once.
-# Reference tables (instruments, limits) carry the epoch as their timestamp and
-# never take a retention clause for the same reason.
+# Retention, by edition and object kind. Every time-series table and every
+# materialized view always gets one:
+#   OSS:        tables and views TTL 3 MONTHS
+#   Enterprise: tables STORAGE POLICY (tiering to Parquet and object storage, the
+#               local copy dropped after 3 months, the remote copy kept); views
+#               TTL 3 MONTHS (storage policies are rejected on views), except the
+#               10-second bars, TTL 1 MONTH
+# --short_ttl only shortens it, so everything is gone after 7 days: TTL 7 DAYS,
+# and on Enterprise a policy that also drops the remote copy at 7 days.
+# Reference tables (instruments, listings, limits) carry the epoch as their
+# timestamp and never take retention: any threshold would drop them at once.
+OSS_TTL = "3 MONTHS"
+SHORT_TTL = "7 DAYS"
 ENTERPRISE_POLICY = "TO REMOTE 1 hour, TO PARQUET 2 days, DROP LOCAL 3 months"
+ENTERPRISE_POLICY_SHORT = "TO REMOTE 1 hour, TO PARQUET 2 days, DROP LOCAL 7 days, DROP REMOTE 7 days"
 
 
-def table_retention(short_ttl: bool, enterprise: bool, oss_ttl: str, policy: str) -> str:
-    if not short_ttl:
-        return ""
+def enterprise_policy(short_ttl: bool) -> str:
+    return ENTERPRISE_POLICY_SHORT if short_ttl else ENTERPRISE_POLICY
+
+
+def table_retention(short_ttl: bool, enterprise: bool) -> str:
     if enterprise:
-        return f" STORAGE POLICY({policy})"
-    return f" TTL {oss_ttl}"
+        return f" STORAGE POLICY({enterprise_policy(short_ttl)})"
+    return f" TTL {SHORT_TTL if short_ttl else OSS_TTL}"
 
 
-def view_retention(short_ttl: bool, oss_ttl: str) -> str:
-    return f" TTL {oss_ttl}" if short_ttl else ""
+def view_retention(short_ttl: bool, enterprise: bool = False, enterprise_ttl: str = OSS_TTL) -> str:
+    if short_ttl:
+        return f" TTL {SHORT_TTL}"
+    return f" TTL {enterprise_ttl if enterprise else OSS_TTL}"
 
 
 def qwp_addr_list(host: str, default_port: int = 9000) -> str:
@@ -717,12 +729,12 @@ def table_ddl(args, prefix: str) -> dict:
 
     Retention is appended after PARTITION BY and before WAL (the only placement
     the parser accepts for TTL). Reference tables never take retention: their
-    timestamp is the epoch and any threshold would drop them at once.
+    timestamp is the epoch and any threshold would drop them at once. A TTL
+    must be a whole multiple of the partition unit, so nothing is partitioned
+    by month: the small tables use WEEK, which takes both 7 days and 3 months.
     """
     TS, SYM, SYML, DEF = _parquet_clauses(args.parquet_encodings)
-    ret_h = table_retention(args.short_ttl, args.enterprise, "3 DAYS", ENTERPRISE_POLICY)
-    ret_d = table_retention(args.short_ttl, args.enterprise, "1 MONTH", ENTERPRISE_POLICY)
-    ret_m = table_retention(args.short_ttl, args.enterprise, "3 MONTHS", ENTERPRISE_POLICY)
+    ret = table_retention(args.short_ttl, args.enterprise)
     t = lambda n: table_name(n, prefix)
     ddl = {}
 
@@ -800,7 +812,7 @@ def table_ddl(args, prefix: str) -> dict:
       bid_size DOUBLE{DEF},
       ask_size DOUBLE{DEF},
       source   SYMBOL CAPACITY 16{SYML}
-    ) TIMESTAMP(ts) PARTITION BY HOUR{ret_h} WAL
+    ) TIMESTAMP(ts) PARTITION BY HOUR{ret} WAL
       DEDUP UPSERT KEYS(ts, symbol, source)"""
 
     # Curve builder output: every contract on every curve, once a minute.
@@ -816,7 +828,7 @@ def table_ddl(args, prefix: str) -> dict:
       venue     SYMBOL CAPACITY 8{SYML},
       version   INT{DEF},
       marked_by SYMBOL CAPACITY 16{SYML}
-    ) TIMESTAMP(ts) PARTITION BY DAY{ret_d} WAL
+    ) TIMESTAMP(ts) PARTITION BY DAY{ret} WAL
       DEDUP UPSERT KEYS(ts, symbol, version)"""
 
     # Official daily settlements, published after the close.
@@ -829,7 +841,7 @@ def table_ddl(args, prefix: str) -> dict:
       volume        DOUBLE{DEF},
       open_interest DOUBLE{DEF},
       source        SYMBOL CAPACITY 16{SYML}
-    ) TIMESTAMP(ts) PARTITION BY MONTH{ret_m} WAL
+    ) TIMESTAMP(ts) PARTITION BY WEEK{ret} WAL
       DEDUP UPSERT KEYS(ts, symbol)"""
 
     # Implied vol surface: one row per contract and delta bucket, every 5 minutes.
@@ -843,7 +855,7 @@ def table_ddl(args, prefix: str) -> dict:
       iv           DOUBLE{DEF},
       source       SYMBOL CAPACITY 16{SYML},
       version      INT{DEF}
-    ) TIMESTAMP(ts) PARTITION BY DAY{ret_d} WAL
+    ) TIMESTAMP(ts) PARTITION BY DAY{ret} WAL
       DEDUP UPSERT KEYS(ts, symbol, delta_bucket, version)"""
 
     # Fair-value model output, champion and challenger side by side, every minute.
@@ -855,7 +867,7 @@ def table_ddl(args, prefix: str) -> dict:
       symbol        SYMBOL CAPACITY 2048{SYM},
       model_px      DOUBLE{DEF},
       inputs_ts     TIMESTAMP{TS}
-    ) TIMESTAMP(ts) PARTITION BY DAY{ret_d} WAL
+    ) TIMESTAMP(ts) PARTITION BY DAY{ret} WAL
       DEDUP UPSERT KEYS(ts, model_version, symbol)"""
 
     # Day-ahead hourly auction prices. These go negative.
@@ -867,7 +879,7 @@ def table_ddl(args, prefix: str) -> dict:
       volume       DOUBLE{DEF},
       source       SYMBOL CAPACITY 16{SYML},
       published_ts TIMESTAMP{TS}
-    ) TIMESTAMP(ts) PARTITION BY MONTH{ret_m} WAL
+    ) TIMESTAMP(ts) PARTITION BY WEEK{ret} WAL
       DEDUP UPSERT KEYS(ts, market)"""
 
     # Exchange executions as the gateway reports them. Voice and bilateral
@@ -885,7 +897,7 @@ def table_ddl(args, prefix: str) -> dict:
       order_id UUID{DEF},
       trade_id UUID{DEF},
       passive  BOOLEAN{DEF}
-    ) TIMESTAMP(ts) PARTITION BY DAY{ret_d} WAL
+    ) TIMESTAMP(ts) PARTITION BY DAY{ret} WAL
       DEDUP UPSERT KEYS(ts, trade_id)"""
 
     # Trade capture log, bitemporal. Booking time is the designated timestamp;
@@ -907,7 +919,7 @@ def table_ddl(args, prefix: str) -> dict:
       counterparty SYMBOL CAPACITY 256{SYML},
       booked_by    SYMBOL CAPACITY 64{SYML},
       reason       SYMBOL CAPACITY 16{SYML}
-    ) TIMESTAMP(booked_ts) PARTITION BY DAY{ret_d} WAL
+    ) TIMESTAMP(booked_ts) PARTITION BY DAY{ret} WAL
       DEDUP UPSERT KEYS(booked_ts, trade_id, version)"""
 
     # End-of-day positions per book, contract and venue at 00:00 UTC, at
@@ -923,7 +935,7 @@ def table_ddl(args, prefix: str) -> dict:
       qty       DOUBLE{DEF},
       settle_px DOUBLE{DEF},
       source    SYMBOL CAPACITY 16{SYML}
-    ) TIMESTAMP(ts) PARTITION BY MONTH{ret_m} WAL
+    ) TIMESTAMP(ts) PARTITION BY WEEK{ret} WAL
       DEDUP UPSERT KEYS(ts, book, symbol, venue)"""
 
     # What the generator planted and when: the presenter's cheat sheet.
@@ -970,22 +982,22 @@ def ensure_tables_and_views(args, prefix: str):
     ddl = table_ddl(args, prefix)
     wanted = [n for n in ALL_TABLES if n in args.table_set]
     t = lambda n: table_name(n, prefix)
-    ttl_h = view_retention(args.short_ttl, "3 DAYS")
-    ttl_d = view_retention(args.short_ttl, "1 MONTH")
-    ttl_m = view_retention(args.short_ttl, "3 MONTHS")
+    vttl = view_retention(args.short_ttl)
+    vttl_10s = view_retention(args.short_ttl, args.enterprise, "1 MONTH")
     with connect_qwp(args) as conn:
         for name in wanted:
             sql = ddl[name]
             try:
                 conn.execute(sql)
             except QuestDBError as e:
-                if args.short_ttl and args.enterprise and "STORAGE POLICY" in sql:
+                if args.enterprise and "STORAGE POLICY" in sql:
                     # Fallback for a parser that wants the policy as a separate
                     # statement: create bare, then ALTER.
+                    policy = enterprise_policy(args.short_ttl)
                     print(f"[DDL] {t(name)}: inline storage policy rejected ({e}); "
                           f"creating without it and applying ALTER TABLE SET STORAGE POLICY", flush=True)
-                    conn.execute(sql.replace(f" STORAGE POLICY({ENTERPRISE_POLICY})", ""))
-                    conn.execute(f"ALTER TABLE {t(name)} SET STORAGE POLICY({ENTERPRISE_POLICY})")
+                    conn.execute(sql.replace(f" STORAGE POLICY({policy})", ""))
+                    conn.execute(f"ALTER TABLE {t(name)} SET STORAGE POLICY({policy})")
                 else:
                     raise
             check_table_schema(conn, t(name), sql)
@@ -1013,7 +1025,7 @@ def ensure_tables_and_views(args, prefix: str):
               FROM {t("quotes")}
               WHERE source IN ({primaries})
               SAMPLE BY 10s
-            ) PARTITION BY DAY{ttl_h}""")
+            ) PARTITION BY DAY{vttl_10s}""")
             conn.execute(f"""
             CREATE MATERIALIZED VIEW IF NOT EXISTS {t("quotes_1m")} AS (
               SELECT ts, symbol, curve,
@@ -1027,7 +1039,7 @@ def ensure_tables_and_views(args, prefix: str):
               FROM {t("quotes")}
               WHERE source IN ({primaries})
               SAMPLE BY 1m
-            ) PARTITION BY DAY{ttl_d}""")
+            ) PARTITION BY DAY{vttl}""")
             # 5-minute bars, the standard grid for realised variance.
             conn.execute(f"""
             CREATE MATERIALIZED VIEW IF NOT EXISTS {t("quotes_5m")} AS (
@@ -1039,7 +1051,7 @@ def ensure_tables_and_views(args, prefix: str):
                      sum(ticks)  AS ticks
               FROM {t("quotes_1m")}
               SAMPLE BY 5m
-            ) PARTITION BY DAY{ttl_d}""")
+            ) PARTITION BY DAY{vttl}""")
             # Daily bars, timed refresh.
             conn.execute(f"""
             CREATE MATERIALIZED VIEW IF NOT EXISTS {t("quotes_1d")}
@@ -1052,7 +1064,7 @@ def ensure_tables_and_views(args, prefix: str):
                      sum(ticks)  AS ticks
               FROM {t("quotes_5m")}
               SAMPLE BY 1d
-            ) PARTITION BY MONTH{ttl_m}""")
+            ) PARTITION BY WEEK{vttl}""")
             print(f"[DDL] Materialized views ready: {t('quotes_10s')}, {t('quotes_1m')}, {t('quotes_5m')}, "
                   f"{t('quotes_1d')}", flush=True)
         if args.create_views and has("curve_marks"):
@@ -1062,7 +1074,7 @@ def ensure_tables_and_views(args, prefix: str):
               SELECT ts, curve, symbol, last(price) AS price
               FROM {t("curve_marks")}
               SAMPLE BY 1h
-            ) PARTITION BY MONTH{ttl_m}""")
+            ) PARTITION BY WEEK{vttl}""")
             print(f"[DDL] Materialized view ready: {t('curve_marks_1h')}", flush=True)
 
         if args.create_live_view and has("fills"):
@@ -3115,8 +3127,8 @@ def main():
     p.add_argument("--store_forward_dir", default=os.path.join(tempfile.gettempdir(), "energy_qwp_sf"),
                    help="Base dir for per-worker store-and-forward spill.")
     p.add_argument("--enterprise", type=bool_arg, default=False,
-                   help="Enterprise server: with --short_ttl, tables take a STORAGE POLICY rather than a TTL. "
-                        "Parquet encodings and everything else are the same on both editions.")
+                   help="Enterprise server: time-series tables take a STORAGE POLICY (Parquet, object storage) "
+                        "instead of a TTL. Parquet encodings and everything else are the same on both editions.")
 
     p.add_argument("--mode", choices=["real-time", "faster-than-life"], required=True)
     p.add_argument("--processes", type=int, default=3,
@@ -3141,7 +3153,9 @@ def main():
     p.add_argument("--create_plain_views", type=bool_arg, default=True, help="Plain views: ledger, tenors, instrument_master and the parameterised *_asof and *_day views.")
     p.add_argument("--tables", type=str, default="all", help="Comma-separated base tables to create and populate.")
     p.add_argument("--parquet_encodings", type=bool_arg, default=True, help="Per-column PARQUET(...) encodings in the DDL.")
-    p.add_argument("--short_ttl", type=bool_arg, default=False)
+    p.add_argument("--short_ttl", type=bool_arg, default=False,
+                   help="Keep everything for 7 days only: TTL 7 DAYS on tables and materialized views, and on "
+                        "Enterprise a storage policy that also drops the remote copy at 7 days. Default: 3 months.")
     p.add_argument("--prefix", type=str, default="energy_")
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--state_file", type=str, default=".energy_state.pkl")
