@@ -132,32 +132,40 @@ with the prefix is listed and left alone. `--keep_state_file true` keeps the sta
 
 ### Schema conventions
 
-- Every table is WAL with a designated timestamp. `instruments`, `listings` and `limits`
-  are the only tables that carry the epoch as their timestamp (small lookup tables, with
-  `ts` as the last column); everything else, `demo_events` included, carries event time.
+- Every table is WAL with a designated timestamp. In `instruments`, `listings` and
+  `limits` (small lookup tables, with `ts` as the last column) it is the time the row was
+  first written; everything else, `demo_events` included, carries event time. Each run
+  writes only the lookup rows whose key (`symbol`; `symbol, exchange`; `book, curve`) is
+  not there yet, so a restart or a second backfill adds new contracts as months roll and
+  never a second copy of a row.
 - `DEDUP UPSERT KEYS` on every table's natural key: re-running a backfill over the same
-  window is an upsert, reference rows are rewritten harmlessly.
+  window is an upsert.
 - Per-column `PARQUET(...)` encodings: `delta_binary_packed` for timestamps,
   `rle_dictionary` for symbols (with `bloom_filter` on the high-cardinality ones),
   `default` for numerics, `zstd(4)` throughout. Same on OSS and Enterprise; only storage
   policies are Enterprise-specific and sit behind `--enterprise`.
 - Nothing is updated in place. A corrected mark is a new row with the same `ts` and
   `version + 1`; a trade amendment or cancel is a new row in the booking log.
-- Partitioning: HOUR for every time-series table, so each partition can go to object
-  storage an hour after it closes (a storage policy stage, like a TTL, must be a whole
-  multiple of the partition size); YEAR for the lookup tables. Materialized views take no
+- Partitioning: HOUR for every table, the lookup tables included, so each partition can
+  go to object storage an hour after it closes (a storage policy stage, like a TTL, must
+  be a whole multiple of the partition size). Materialized views take no
   storage policy and keep their own: DAY for the 10-second, 1-minute and 5-minute bars,
   WEEK for the daily bars and the hourly curve marks, which takes both 7 days and 3
   months.
-- Retention, on every time-series table and materialized view, never on the lookup tables
-  (their rows carry the epoch, so any threshold would drop them):
+- Retention, on every table and materialized view:
 
-  | | Tables | Materialized views |
-  |---|---|---|
-  | OSS | `TTL 3 MONTHS` | `TTL 3 MONTHS` |
-  | OSS, `--short_ttl` | `TTL 7 DAYS` | `TTL 7 DAYS` |
-  | Enterprise | `STORAGE POLICY(TO REMOTE 1 hour, TO PARQUET 7 days, DROP LOCAL 3 months)` | `TTL 3 MONTHS`, `quotes_10s` `TTL 1 MONTH` |
-  | Enterprise, `--short_ttl` | `STORAGE POLICY(TO REMOTE 1 hour, TO PARQUET 3 days, DROP LOCAL 7 days, DROP REMOTE 7 days)` | `TTL 7 DAYS` |
+  | | Time-series tables | Lookup tables | Materialized views |
+  |---|---|---|---|
+  | OSS | `TTL 3 MONTHS` | none | `TTL 3 MONTHS` |
+  | OSS, `--short_ttl` | `TTL 7 DAYS` | none | `TTL 7 DAYS` |
+  | Enterprise | `STORAGE POLICY(TO REMOTE 1 hour, TO PARQUET 7 days, DROP LOCAL 3 months)` | `STORAGE POLICY(TO REMOTE 1 hour, TO PARQUET 7 days, DROP LOCAL 3 months)` | `TTL 3 MONTHS`, `quotes_10s` `TTL 1 MONTH` |
+  | Enterprise, `--short_ttl` | `STORAGE POLICY(TO REMOTE 1 hour, TO PARQUET 3 days, DROP LOCAL 7 days, DROP REMOTE 7 days)` | `STORAGE POLICY(TO REMOTE 1 hour, TO PARQUET 7 days, DROP LOCAL 3 months)` | `TTL 7 DAYS` |
+
+  The time-series tables include `demo_events`; the lookup tables are `instruments`,
+  `listings` and `limits`. Every view joins them, so they are never deleted: no TTL on
+  OSS, and on Enterprise the full policy without `DROP REMOTE`, `--short_ttl` or not.
+  Sealing their old partitions never blocks a write, since new rows land in the current
+  hour.
 
   On Enterprise the policy tiers partitions to Parquet and object storage and keeps them
   queryable; only `--short_ttl` deletes the remote copy. Materialized views do not take
@@ -550,7 +558,7 @@ drill-down sibling right below them.
   reads every quote in the table (2.4 s instead of 0.4 s here). For a derived left side
   (markouts from deal time rather than booking time) wrap it: `FROM (t TIMESTAMP(ts)) AS t`.
 - Every query carries a time bound, except lookups on the reference tables
-  (`instruments`, `listings`, `limits`, whose rows carry the epoch). The `_asof` views
+  (`instruments`, `listings`, `limits`, one row per key whatever its timestamp). The `_asof` views
   look back a day for marks and an hour for FX; the booking views take the deals done on
   the day of `@asof` (bounded on `trade_ts`; their `booked_ts >= 00:00` only starts the
   scan at the day, since a booking never precedes its deal); the `_day` views take one

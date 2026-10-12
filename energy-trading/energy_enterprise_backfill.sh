@@ -24,14 +24,15 @@
 # by name, then run this: the generator refuses to write into a table whose
 # schema differs from its own.
 #
-# Every table is WAL with per-column Parquet encodings and the time-series tables
-# are partitioned by hour. With --enterprise they take a storage policy: TO REMOTE
-# 1 hour, TO PARQUET 7 days, DROP LOCAL 3 months. Backfilled partitions are already
-# hours or days old, so they go to object storage within minutes (and those more
-# than a week old to Parquet) and stay queryable. Materialized views keep a
-# TTL (3 months, the 10-second bars 1 month). Add --short_ttl true to keep
-# everything for 7 days only, remote copies included; then keep the backfill
-# window under 7 days.
+# Every table is WAL with per-column Parquet encodings and partitioned by hour.
+# With --enterprise every table goes to object storage: the time-series tables take
+# TO REMOTE 1 hour, TO PARQUET 7 days, DROP LOCAL 3 months, and so do the lookup
+# tables (instruments, listings, limits, one row per key stamped when first
+# written), --short_ttl or not. Backfilled partitions are already hours or days old, so they go to object
+# storage within minutes (and those more than a week old to Parquet) and stay
+# queryable. Materialized views keep a TTL (3 months, the 10-second bars 1 month).
+# Add --short_ttl true to keep the time-series data for 7 days only, remote copies
+# included (the lookup tables stay); then keep the backfill window under 7 days.
 #
 # This is a CORRECTNESS run, not a throughput run. The scale factor is kept
 # modest on purpose for the gp3 volume: 0.5 is roughly 35M quotes a weekday, which is

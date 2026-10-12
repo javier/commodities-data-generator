@@ -617,8 +617,8 @@ def bool_arg(x) -> bool:
 #               10-second bars, TTL 1 MONTH
 # --short_ttl only shortens it, so everything is gone after 7 days: TTL 7 DAYS,
 # and on Enterprise a policy that also drops the remote copy at 7 days.
-# Reference tables (instruments, listings, limits) carry the epoch as their
-# timestamp and never take retention: any threshold would drop them at once.
+# Reference tables (instruments, listings, limits) are never deleted: on Enterprise
+# they never take DROP REMOTE, on OSS they keep no TTL.
 OSS_TTL = "3 MONTHS"
 SHORT_TTL = "7 DAYS"
 # Every time-series table is partitioned by hour, so each partition is uploaded to
@@ -639,6 +639,19 @@ def table_retention(short_ttl: bool, enterprise: bool) -> str:
     if enterprise:
         return f" STORAGE POLICY({enterprise_policy(short_ttl)})"
     return f" TTL {SHORT_TTL if short_ttl else OSS_TTL}"
+
+
+# Reference tables (instruments, listings, limits) hold one row per key, stamped
+# when it was first written. On Enterprise they take the full policy minus DROP
+# REMOTE, with or without --short_ttl: old partitions go to object storage and
+# Parquet and are sealed after 3 months (new rows always land in the current hour,
+# so sealing never blocks a write), but the rows are never deleted, since every
+# view joins them. On OSS, where there is no remote copy, they keep no TTL.
+REFERENCE_POLICY = ENTERPRISE_POLICY
+
+
+def reference_retention(enterprise: bool) -> str:
+    return f" STORAGE POLICY({REFERENCE_POLICY})" if enterprise else ""
 
 
 def view_retention(short_ttl: bool, enterprise: bool = False, enterprise_ttl: str = OSS_TTL) -> str:
@@ -735,22 +748,23 @@ def table_ddl(args, prefix: str) -> dict:
     """The schema. Names are bare here and table_name() applies --prefix.
 
     Retention is appended after PARTITION BY and before WAL (the only placement
-    the parser accepts for TTL). Reference tables never take retention: their
-    timestamp is the epoch and any threshold would drop them at once. Every
-    time-series table is partitioned by hour: a storage policy stage must be a
-    whole multiple of the partition size, and the policy uploads each partition
-    an hour after it closes.
+    the parser accepts for TTL). Every table is partitioned by hour: a storage
+    policy stage must be a whole multiple of the partition size, and on
+    Enterprise every table goes to object storage an hour after a partition
+    closes. Reference tables are never deleted: no DROP REMOTE on Enterprise,
+    no TTL on OSS (see reference_retention).
     """
     TS, SYM, SYML, DEF = _parquet_clauses(args.parquet_encodings)
     ret = table_retention(args.short_ttl, args.enterprise)
+    ref_ret = reference_retention(args.enterprise)
     t = lambda n: table_name(n, prefix)
     ddl = {}
 
     # One row per instrument: the risk object (one fair value, one position
     # for risk and PnL), identified by the desk's readable symbol. Where it
-    # trades lives in listings. Reference data: ts is the epoch and the last
-    # column, so SELECT * does not lead with 1970; DEDUP turns a re-run into
-    # an upsert. term_code and month_code describe the delivery period.
+    # trades lives in listings. Reference data: ts is when the row was first
+    # written and the last column, so SELECT * leads with the symbol; a re-run
+    # adds only new keys (see write_static_rows). term_code and month_code describe the delivery period.
     ddl["instruments"] = f"""
     CREATE TABLE IF NOT EXISTS {t("instruments")} (
       symbol         SYMBOL CAPACITY 2048{SYM},
@@ -770,7 +784,7 @@ def table_ddl(args, prefix: str) -> dict:
       fx_symbol      SYMBOL CAPACITY 4{SYML},
       to_mwh         DOUBLE{DEF},
       ts             TIMESTAMP{TS}
-    ) TIMESTAMP(ts) PARTITION BY YEAR WAL
+    ) TIMESTAMP(ts) PARTITION BY HOUR{ref_ret} WAL
       DEDUP UPSERT KEYS(ts, symbol)"""
 
     # One row per listing: an instrument on a venue. exchange_symbol is the
@@ -793,7 +807,7 @@ def table_ddl(args, prefix: str) -> dict:
       is_primary             BOOLEAN{DEF},
       liquidity_share        DOUBLE{DEF},
       ts                     TIMESTAMP{TS}
-    ) TIMESTAMP(ts) PARTITION BY YEAR WAL
+    ) TIMESTAMP(ts) PARTITION BY HOUR{ref_ret} WAL
       DEDUP UPSERT KEYS(ts, symbol, exchange)"""
 
     # Position limits per book and curve, in delivery units. A limit change is
@@ -806,7 +820,7 @@ def table_ddl(args, prefix: str) -> dict:
       unit        SYMBOL CAPACITY 8{SYML},
       approved_by SYMBOL CAPACITY 16{SYML},
       ts          TIMESTAMP{TS}
-    ) TIMESTAMP(ts) PARTITION BY YEAR WAL
+    ) TIMESTAMP(ts) PARTITION BY HOUR{ref_ret} WAL
       DEDUP UPSERT KEYS(ts, book, curve)"""
 
     # Top of book for every quoted contract plus FX. The high-rate table.
@@ -952,7 +966,7 @@ def table_ddl(args, prefix: str) -> dict:
       ts   TIMESTAMP{TS},
       act  SYMBOL CAPACITY 8{SYML},
       what VARCHAR{DEF}
-    ) TIMESTAMP(ts) PARTITION BY YEAR WAL
+    ) TIMESTAMP(ts) PARTITION BY HOUR{ret} WAL
       DEDUP UPSERT KEYS(ts, act)"""
     return ddl
 
@@ -2684,9 +2698,9 @@ class SpanGenerator:
 # Static rows
 # ----------------------------
 
-def instruments_df(inst: pd.DataFrame) -> pd.DataFrame:
+def instruments_df(inst: pd.DataFrame, ts_ns: int) -> pd.DataFrame:
     return pd.DataFrame({
-        "ts": np.zeros(len(inst), dtype=np.int64), "symbol": inst.symbol,
+        "ts": np.full(len(inst), ts_ns, dtype=np.int64), "symbol": inst.symbol,
         "curve": inst.curve, "complex": inst["complex"], "granularity": inst.granularity,
         "delivery_start": pd.to_datetime(inst.delivery_start).astype("datetime64[ns]").astype("int64"),
         "delivery_end": pd.to_datetime(inst.delivery_end).astype("datetime64[ns]").astype("int64"),
@@ -2697,9 +2711,9 @@ def instruments_df(inst: pd.DataFrame) -> pd.DataFrame:
         "to_mwh": inst.to_mwh.astype(float)})
 
 
-def listings_df(lst: pd.DataFrame) -> pd.DataFrame:
+def listings_df(lst: pd.DataFrame, ts_ns: int) -> pd.DataFrame:
     return pd.DataFrame({
-        "ts": np.zeros(len(lst), dtype=np.int64), "symbol": lst.symbol, "exchange": lst.exchange,
+        "ts": np.full(len(lst), ts_ns, dtype=np.int64), "symbol": lst.symbol, "exchange": lst.exchange,
         "mic": lst.mic, "exchange_code": lst.exchange_code,
         "exchange_physical_code": lst.exchange_physical_code.astype(object).where(lst.exchange_physical_code.notna(), None),
         "exchange_symbol": lst.exchange_symbol.astype(object), "ccp": lst.ccp,
@@ -2707,8 +2721,8 @@ def listings_df(lst: pd.DataFrame) -> pd.DataFrame:
         "is_primary": lst.is_primary.astype(bool), "liquidity_share": lst.liquidity_share.astype(float)})
 
 
-def limits_df() -> pd.DataFrame:
-    rows = [[0, b, c, float(v), CURVES[c]["unit"], "risk_control"] for (b, c), v in LIMITS.items()]
+def limits_df(ts_ns: int) -> pd.DataFrame:
+    rows = [[ts_ns, b, c, float(v), CURVES[c]["unit"], "risk_control"] for (b, c), v in LIMITS.items()]
     return pd.DataFrame(rows, columns=["ts", "book", "curve", "max_abs_qty", "unit", "approved_by"])
 
 
@@ -2929,20 +2943,42 @@ def restore_from_db(args, prefix: str, mkt: MarketModel, planner: DeskPlanner, s
 # Modes
 # ----------------------------
 
+def new_reference_rows(db, args, table: str, df: pd.DataFrame, keys: list) -> pd.DataFrame:
+    """The rows of df whose key is not in the table yet. Reference rows carry the
+    time they were first written, so every run adds only what is new (contracts
+    listed as months roll) and never a second copy of a row already there."""
+    if table not in args.table_set or df.empty:
+        return df
+    have = query_df(db, f"SELECT DISTINCT {', '.join(keys)} FROM {table_name(table, args.prefix)}")
+    if have.empty:
+        return df
+    have = {tuple(str(x) for x in r) for r in have[keys].itertuples(index=False)}
+    mask = [tuple(str(x) for x in r) not in have for r in df[keys].itertuples(index=False)]
+    return df[mask]
+
+
 def write_static_rows(args, mkt: MarketModel, planner: DeskPlanner, gen: SpanGenerator, start_ns: int):
     """Reference data and the cheat sheet, plus the first day's day-ahead
-    prices (published before the window opened, so no slice owns them)."""
+    prices (published before the window opened, so no slice owns them).
+    Reference rows are stamped with the time they are written and inserted only
+    when new, so repeated runs never duplicate them."""
+    now_ns = time.time_ns()
     with connect_qwp(args, sender_id=sender_tag(args, "static"), auto_flush_interval=1000) as db, db.sender() as sender:
         emitter = SortedEmitter(sender, args.prefix, args.table_set, 1_000_000)
-        emitter.emit("instruments", instruments_df(mkt.inst))
-        emitter.emit("listings", listings_df(mkt.listings))
-        emitter.emit("limits", limits_df())
+        added = {}
+        for table, df, keys in (("instruments", instruments_df(mkt.inst, now_ns), ["symbol"]),
+                                ("listings", listings_df(mkt.listings, now_ns), ["symbol", "exchange"]),
+                                ("limits", limits_df(now_ns), ["book", "curve"])):
+            new = new_reference_rows(db, args, table, df, keys)
+            added[table] = len(new)
+            emitter.emit(table, new)
         emitter.emit("demo_events", demo_events_df(planner.demo_events))
         day_sec = start_ns // NS - (start_ns // NS) % 86400
         emitter.emit("da_prices", gen.day_ahead(day_sec, day_sec - 86400 + 12 * 3600 + 2700))
         emitter.flush_all()
         sender.flush(wait=True)
-    print("[INFO] Static rows written: instruments, limits, demo_events, day-ahead for the first day.", flush=True)
+    print(f"[INFO] Static rows written: new reference rows {added}, demo_events, day-ahead for the first day.",
+          flush=True)
 
 
 def hour_slices(start_ns: int, end_ns: int):
