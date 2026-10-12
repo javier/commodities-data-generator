@@ -118,10 +118,21 @@ which saves the state file.
 
 ### Starting over: `energy_wipe.py`
 
-Drops every table, materialized view, live view and plain view the generator creates for
-one prefix, and deletes the real-time state file, so the next backfill starts clean. It
-takes the generator's connection flags and `--prefix` (default `energy_`), lists what
-exists, and drops nothing unless you type `YES` in capitals:
+Wipes the dataset for one prefix so the next backfill starts clean: drops every
+materialized view, live view and plain view the generator creates, empties or drops its
+tables, and deletes the real-time state file. It takes the generator's connection flags
+and `--prefix` (default `energy_`), lists what exists and asks two questions:
+
+1. Table wipe mode, `TRUNCATE` or `DROP`. Anything other than `DROP` means `TRUNCATE`,
+   the default: each table is emptied and kept, so its internal table id, and with it
+   its location in object storage, stays the same and tooling that reads the remote
+   copies keeps working. `DROP` removes the tables too; the next run creates them under
+   new ids. Views of every kind are dropped either way, and the next generator run
+   recreates them.
+2. Confirmation: nothing is dropped or truncated unless you type `YES` in capitals.
+
+A table whose schema has changed must be dropped: the generator refuses to write into a
+table whose schema differs from its own.
 
 ```bash
 python energy_wipe.py                                    # local, energy_
@@ -130,7 +141,7 @@ python energy_wipe.py --host 172.31.42.41:9000,172.31.41.35:9000,10.0.0.8:9000 \
   --qwp_tls true --tls_verify unsafe_off --token_file ~/qwp_token.txt
 ```
 
-It drops by exact name, the objects the generator creates; anything else that starts
+It acts by exact name, on the objects the generator creates; anything else that starts
 with the prefix is listed and left alone. `--keep_state_file true` keeps the state file.
 
 ### Schema conventions

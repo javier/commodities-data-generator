@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""Drop the whole energy trading dataset: every table, materialized view, live view
-and plain view the generator creates for one prefix, and the real-time state file.
+"""Wipe the whole energy trading dataset for one prefix: drop every materialized view,
+live view and plain view the generator creates, empty or drop its tables, and delete the
+real-time state file. The next generator run recreates the views.
 
     python energy_wipe.py                                   # local, prefix energy_
     python energy_wipe.py --prefix energy_test_
     python energy_wipe.py --host 172.31.42.41:9000,172.31.41.35:9000 --qwp_tls true \\
         --tls_verify unsafe_off --token_file ~/qwp_token.txt
 
-It drops objects by their exact names, the ones the generator creates, never by
+It asks two questions. First the table wipe mode: TRUNCATE (the default, anything
+other than DROP) empties each table and keeps it, so its internal table id and with
+it its object storage location stay the same; DROP removes the tables too. Then it
+shows the plan and asks for confirmation: anything other than YES, in capitals,
+aborts with nothing touched. Views of every kind are always dropped.
+
+It acts on objects by their exact names, the ones the generator creates, never by
 pattern; anything else that happens to start with the prefix is listed and left
-alone. It shows what exists and asks for confirmation: anything other than YES,
-in capitals, aborts with nothing dropped. Connection flags are the generator's.
+alone. Connection flags are the generator's.
 """
 import argparse
 import os
@@ -27,10 +33,11 @@ PLAIN_VIEWS = ["instrument_master", "tenors", "curve_marks_latest", "trade_event
                "tenors_asof", "marks_asof", "fx_asof", "book_asof", "book_restated", "ledger"]
 MATERIALIZED_VIEWS = ["quotes_1d", "quotes_5m", "quotes_1m", "quotes_10s", "curve_marks_1h"]
 TABLES = gen.ALL_TABLES
-KINDS = [("live view", "L", LIVE_VIEWS, "DROP LIVE VIEW IF EXISTS"),
-         ("view", "V", PLAIN_VIEWS, "DROP VIEW IF EXISTS"),
-         ("materialized view", "M", MATERIALIZED_VIEWS, "DROP MATERIALIZED VIEW IF EXISTS"),
-         ("table", "T", TABLES, "DROP TABLE IF EXISTS")]
+VIEW_KINDS = [("live view", LIVE_VIEWS, "DROP LIVE VIEW IF EXISTS"),
+              ("view", PLAIN_VIEWS, "DROP VIEW IF EXISTS"),
+              ("materialized view", MATERIALIZED_VIEWS, "DROP MATERIALIZED VIEW IF EXISTS")]
+TABLE_MODES = {"TRUNCATE": ("truncate", "truncated", "TRUNCATE TABLE IF EXISTS"),
+               "DROP": ("drop", "dropped", "DROP TABLE IF EXISTS")}
 CONNECT_TIMEOUT_S = 20
 
 
@@ -65,7 +72,8 @@ def existing_with_timeout(conn, args) -> dict:
 
 
 def main():
-    p = argparse.ArgumentParser(description="Drop the energy trading dataset for one prefix, after confirmation.")
+    p = argparse.ArgumentParser(description="Wipe the energy trading dataset for one prefix, after confirmation: "
+                                            "views dropped, tables truncated (default) or dropped.")
     p.add_argument("--host", default="127.0.0.1",
                    help="QWP host, or comma-separated list (primary first). Entries without a port default to 9000.")
     p.add_argument("--user", default="admin")
@@ -97,43 +105,56 @@ def main():
         sys.exit(2)
     with conn:
         objects = existing_with_timeout(conn, args)
-        plan = []
-        for label, code, names, stmt in KINDS:
-            for n in names:
-                full = f"{args.prefix}{n}"
-                if full in objects:
-                    plan.append((label, full, f"{stmt} {full}"))
-        ours = {full for _, full, _ in plan}
+        views = [(label, f"{args.prefix}{n}", f"{stmt} {args.prefix}{n}")
+                 for label, names, stmt in VIEW_KINDS for n in names if f"{args.prefix}{n}" in objects]
+        tables = [f"{args.prefix}{n}" for n in TABLES if f"{args.prefix}{n}" in objects]
+        ours = {full for _, full, _ in views} | set(tables)
         others = sorted(n for n in objects if n.startswith(args.prefix) and n not in ours)
         state = args.state_file if (not args.keep_state_file and os.path.exists(args.state_file)) else None
 
         print(f"QuestDB: {args.host}    prefix: {args.prefix}")
-        if not plan and not state:
-            print("Nothing to drop: no energy dataset objects with this prefix.")
+        if not ours and not state:
+            print("Nothing to wipe: no energy dataset objects with this prefix.")
             if others:
                 print("Left alone (not created by the generator): " + ", ".join(others))
             return
-        print(f"\nAbout to drop {len(plan)} objects:")
-        for label, full, _ in plan:
-            print(f"  {label:18s} {full}")
+
+        mode = "TRUNCATE"
+        if tables:
+            print("\nTRUNCATE empties each table and keeps it (same table id, same object storage location);")
+            print("DROP removes the tables. Views of every kind are dropped either way.")
+            try:
+                answer = input("Table wipe mode, TRUNCATE or DROP [TRUNCATE]: ")
+            except EOFError:
+                answer = ""
+            mode = "DROP" if answer.strip() == "DROP" else "TRUNCATE"
+        verb, done, table_stmt = TABLE_MODES[mode]
+        plan = views + [("table", full, f"{table_stmt} {full}") for full in tables]
+
+        print(f"\nAbout to drop {len(views)} views and {verb} {len(tables)} tables:")
+        for label, full, _ in views:
+            print(f"  {'drop':9s}{label:18s} {full}")
+        for full in tables:
+            print(f"  {verb:9s}{'table':18s} {full}")
         if state:
-            print(f"  {'state file':18s} {state}")
+            print(f"  {'delete':9s}{'state file':18s} {state}")
         if others:
             print("\nLeft alone (start with the prefix, not created by the generator): " + ", ".join(others))
         print("\nThis cannot be undone.")
         try:
-            answer = input("Type YES to drop them: ")
+            answer = input("Type YES to go ahead: ")
         except EOFError:
             answer = ""
         if answer != "YES":
-            print("Aborted. Nothing was dropped.")
+            print("Aborted. Nothing was dropped or truncated.")
             sys.exit(1)
 
+        # Views first: they read the tables.
         failures = 0
         for label, full, sql in plan:
             try:
                 conn.execute(sql)
-                print(f"dropped {label} {full}")
+                print(f"{done if label == 'table' else 'dropped'} {label} {full}")
             except Exception as e:
                 failures += 1
                 print(f"FAILED  {label} {full}: {e}")
@@ -141,11 +162,22 @@ def main():
             os.remove(state)
             print(f"deleted state file {state}")
 
-        remaining = sorted(n for n in existing_objects(conn) if n in ours)
+        after = existing_objects(conn)
+        remaining = sorted(full for _, full, _ in views if full in after)
+        if mode == "DROP":
+            remaining += sorted(full for full in tables if full in after)
+        missing = sorted(full for full in tables if full not in after) if mode == "TRUNCATE" else []
         if remaining:
             print("Still present: " + ", ".join(remaining))
-        else:
-            print(f"Done: no {args.prefix} dataset objects remain.")
+        if missing:
+            print("Missing after TRUNCATE: " + ", ".join(missing))
+        if not remaining and not missing:
+            if mode == "TRUNCATE" and tables:
+                print(f"Done: no {args.prefix} views remain, {len(tables)} tables kept empty. "
+                      f"The next generator run recreates the views.")
+            else:
+                print(f"Done: no {args.prefix} dataset objects remain.")
+        remaining += missing
     sys.exit(1 if failures or remaining else 0)
 
 
