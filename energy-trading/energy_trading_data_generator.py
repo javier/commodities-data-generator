@@ -629,6 +629,13 @@ SHORT_TTL = "7 DAYS"
 # true for all, and TO PARQUET may not come after DROP LOCAL.
 ENTERPRISE_POLICY = "TO REMOTE 1 hour, TO PARQUET 7 days, DROP LOCAL 3 months"
 ENTERPRISE_POLICY_SHORT = "TO REMOTE 1 hour, TO PARQUET 3 days, DROP LOCAL 7 days, DROP REMOTE 7 days"
+# Live views flush on this interval. Fills arrive about every 7 seconds in
+# European hours at scale 1, so a 1-second flush would mostly flush nothing.
+# The query pack reads the live views filtered to a day and aggregated, which
+# is served from the disk tier: those reads trail the fills by up to one flush.
+# No read uses the in-memory tier, so IN MEMORY is set to the flush interval,
+# its default and the smallest allowed, written out to be explicit.
+LIVE_VIEW_FLUSH = "5s"
 
 
 def enterprise_policy(short_ttl: bool) -> str:
@@ -1101,11 +1108,12 @@ def ensure_tables_and_views(args, prefix: str):
 
         if args.create_live_view and has("fills"):
             # Running position and cash per book and contract from exchange
-            # fills, reset daily. Beta in 10.0: log and carry on if rejected;
-            # every query that reads it has a window-function twin over fills.
+            # fills, reset daily, flushed every LIVE_VIEW_FLUSH. Beta in 10.0:
+            # log and carry on if rejected; every query that reads it has a
+            # window-function twin over fills.
             try:
                 conn.execute(f"""
-                CREATE LIVE VIEW IF NOT EXISTS {t("positions_live")} FLUSH EVERY 1s START FROM BEGINNING AS
+                CREATE LIVE VIEW IF NOT EXISTS {t("positions_live")} FLUSH EVERY {LIVE_VIEW_FLUSH} IN MEMORY {LIVE_VIEW_FLUSH} START FROM BEGINNING AS
                 SELECT ts, book, symbol, curve,
                        sum(qty)      OVER w AS pos,
                        sum(qty * px) OVER w AS cost
@@ -1118,7 +1126,7 @@ def ensure_tables_and_views(args, prefix: str):
             # The same per venue: margin is per clearing house, risk is not.
             try:
                 conn.execute(f"""
-                CREATE LIVE VIEW IF NOT EXISTS {t("positions_live_by_venue")} FLUSH EVERY 1s START FROM BEGINNING AS
+                CREATE LIVE VIEW IF NOT EXISTS {t("positions_live_by_venue")} FLUSH EVERY {LIVE_VIEW_FLUSH} IN MEMORY {LIVE_VIEW_FLUSH} START FROM BEGINNING AS
                 SELECT ts, book, symbol, curve, venue,
                        sum(qty)      OVER w AS pos,
                        sum(qty * px) OVER w AS cost
