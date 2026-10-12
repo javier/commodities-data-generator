@@ -29,6 +29,10 @@ only honours them when the server's `min_refresh_interval` is 250 ms or lower; i
 default is 5 s (`[dashboards] min_refresh_interval` in `grafana.ini`, or
 `GF_DASHBOARDS_MIN_REFRESH_INTERVAL=250ms` for a container).
 
+The layout is checked on a 1920 px wide screen (1080p) and wider: every table fills its
+panel and shows all its columns without scrolling sideways. On a narrower screen the
+number columns stop shrinking at their minimum widths and the tables scroll.
+
 ## How the as-of works
 
 Every panel query starts by binding the views' overridable variables to the end of the

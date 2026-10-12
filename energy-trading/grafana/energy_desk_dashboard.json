@@ -179,8 +179,8 @@
         "uid": "${DS_QUESTDB}"
       },
       "gridPos": {
-        "h": 11,
-        "w": 15,
+        "h": 12,
+        "w": 14,
         "x": 0,
         "y": 0
       },
@@ -292,9 +292,9 @@
         "uid": "${DS_QUESTDB}"
       },
       "gridPos": {
-        "h": 11,
-        "w": 9,
-        "x": 15,
+        "h": 12,
+        "w": 10,
+        "x": 14,
         "y": 0
       },
       "targets": [
@@ -391,7 +391,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 122
+                "value": 128
               }
             ]
           },
@@ -403,7 +403,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 124
+                "value": 120
               }
             ]
           },
@@ -414,8 +414,8 @@
             },
             "properties": [
               {
-                "id": "custom.width",
-                "value": 74
+                "id": "custom.minWidth",
+                "value": 62
               }
             ]
           },
@@ -426,8 +426,8 @@
             },
             "properties": [
               {
-                "id": "custom.width",
-                "value": 74
+                "id": "custom.minWidth",
+                "value": 62
               }
             ]
           },
@@ -438,8 +438,8 @@
             },
             "properties": [
               {
-                "id": "custom.width",
-                "value": 74
+                "id": "custom.minWidth",
+                "value": 62
               }
             ]
           },
@@ -450,8 +450,8 @@
             },
             "properties": [
               {
-                "id": "custom.width",
-                "value": 64
+                "id": "custom.minWidth",
+                "value": 54
               }
             ]
           },
@@ -462,8 +462,8 @@
             },
             "properties": [
               {
-                "id": "custom.width",
-                "value": 58
+                "id": "custom.minWidth",
+                "value": 48
               }
             ]
           },
@@ -474,8 +474,8 @@
             },
             "properties": [
               {
-                "id": "custom.width",
-                "value": 52
+                "id": "custom.minWidth",
+                "value": 44
               }
             ]
           },
@@ -638,14 +638,14 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 11
+        "y": 12
       }
     },
     {
       "id": 2,
       "type": "table",
       "title": "PnL and position blotter, as of the end of the range",
-      "description": "Per book and contract: net position, the live mark at the right edge of the range (the latest primary-listing mid from marks_live, or the curve builder's mark where there is no fresh quote), the opening book revalued from settlement, today's trading and the total, in USD. Reads ledger, marks_live and usd_factor_asof. 1a_pnl_by_book values the same book at the official minute marks (marks_asof).",
+      "description": "Per book and contract: net position, the live mark at the right edge of the range (the latest primary-listing mid from marks_live, or the curve builder's mark where there is no fresh quote), the opening book revalued from settlement, today's trading and the total, in USD. Positions are in delivery units (MWh, bbl, t, MMBtu), marks in each curve's price unit. Reads ledger, marks_live and usd_factor_asof. 1a_pnl_by_book values the same book at the official minute marks (marks_asof).",
       "datasource": {
         "type": "questdb-questdb-datasource",
         "uid": "${DS_QUESTDB}"
@@ -654,7 +654,7 @@
         "h": 10,
         "w": 16,
         "x": 0,
-        "y": 12
+        "y": 13
       },
       "targets": [
         {
@@ -738,7 +738,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 150
+                "value": 130
               }
             ]
           },
@@ -750,7 +750,87 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 150
+                "value": 140
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "position"
+            },
+            "properties": [
+              {
+                "id": "custom.minWidth",
+                "value": 90
+              },
+              {
+                "id": "custom.filterable",
+                "value": false
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "mark"
+            },
+            "properties": [
+              {
+                "id": "custom.minWidth",
+                "value": 90
+              },
+              {
+                "id": "custom.filterable",
+                "value": false
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sod_revalued_usd"
+            },
+            "properties": [
+              {
+                "id": "custom.minWidth",
+                "value": 90
+              },
+              {
+                "id": "custom.filterable",
+                "value": false
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "todays_trading_usd"
+            },
+            "properties": [
+              {
+                "id": "custom.minWidth",
+                "value": 90
+              },
+              {
+                "id": "custom.filterable",
+                "value": false
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total_pnl_usd"
+            },
+            "properties": [
+              {
+                "id": "custom.minWidth",
+                "value": 90
+              },
+              {
+                "id": "custom.filterable",
+                "value": false
               }
             ]
           },
@@ -762,7 +842,7 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "Position (delivery units)"
+                "value": "Position"
               },
               {
                 "id": "decimals",
@@ -782,7 +862,7 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "Mark (price unit)"
+                "value": "Mark"
               },
               {
                 "id": "decimals",
@@ -842,7 +922,7 @@
             "properties": [
               {
                 "id": "displayName",
-                "value": "Opening book revalued, USD"
+                "value": "Opening book, USD"
               }
             ]
           },
@@ -990,7 +1070,7 @@
         "h": 10,
         "w": 8,
         "x": 16,
-        "y": 12
+        "y": 13
       },
       "targets": [
         {
@@ -1044,6 +1124,30 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "book"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "curve"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 75
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "pct_now"
             },
             "properties": [
@@ -1054,6 +1158,10 @@
               {
                 "id": "unit",
                 "value": "percent"
+              },
+              {
+                "id": "custom.minWidth",
+                "value": 100
               },
               {
                 "id": "decimals",
@@ -1116,6 +1224,10 @@
               {
                 "id": "unit",
                 "value": "percent"
+              },
+              {
+                "id": "custom.minWidth",
+                "value": 100
               },
               {
                 "id": "decimals",
@@ -1188,7 +1300,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 22
+        "y": 23
       }
     },
     {
@@ -1204,7 +1316,7 @@
         "h": 15,
         "w": 12,
         "x": 0,
-        "y": 23
+        "y": 24
       },
       "interval": "10s",
       "maxDataPoints": 200,
@@ -1384,7 +1496,7 @@
         "h": 15,
         "w": 12,
         "x": 12,
-        "y": 23
+        "y": 24
       },
       "targets": [
         {
@@ -1493,7 +1605,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 38
+        "y": 39
       }
     },
     {
@@ -1509,7 +1621,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 39
+        "y": 40
       },
       "targets": [
         {
@@ -1619,7 +1731,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 39
+        "y": 40
       },
       "targets": [
         {
