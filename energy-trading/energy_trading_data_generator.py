@@ -1667,9 +1667,10 @@ class MarketModel:
         minutes plus the deterministic intra-minute bridge."""
         secs = np.asarray(secs, dtype=np.int64)
         minutes = secs // 60
-        self.extend_to(int(minutes.max()) + 1)
         # Instants before the path starts (the first day's day-ahead publication)
-        # read the first minute.
+        # read the first minute, so the path needs at least two even when every
+        # instant asked for is earlier (a real-time start rebuilt from the database).
+        self.extend_to(max(int(minutes.max()), self.m0) + 1)
         i = np.maximum(minutes - self.m0, 0)
         frac = (secs % 60) / 60.0
         a = self.path[i]
@@ -2848,7 +2849,11 @@ def save_state(path: str, mkt: MarketModel, planner: DeskPlanner, desk: dict, t_
             "rng": planner.rng.bit_generator.state, "route_rng": planner.route_rng.bit_generator.state,
             "pos": planner.pos, "pos_fills": planner.pos_fills,
             "effects": [e for e in planner.effects if e[0] > t_last_ns / NS - 86400], "settle": planner.settle,
-            "targets": planner.targets, "scripted": planner.scripted, "planned_through": planner.planned_through,
+            "targets": planner.targets, "planned_through": planner.planned_through,
+            # Scripted clips by symbol, not contract index: a resume on a later day
+            # lists fewer contracts once one expires, and the indices shift.
+            "scripted": {m: [(r[0], r[1], r[2], str(mkt.sym[r[3]])) + tuple(r[4:]) for r in rows]
+                         for m, rows in planner.scripted.items()},
             "pending": {k: v for k, v in desk.items()},
         },
     }
@@ -2876,14 +2881,38 @@ def restore_from_state(state: dict, mkt: MarketModel, planner: DeskPlanner):
     for key, q in p.get("pos_fills", p["pos"]).items():
         # State files from before listings keyed fills by (book, symbol).
         if len(key) == 2:
+            if key[1] not in mkt.sym_idx:
+                continue
             key = (key[0], key[1], mkt.l_exchange[mkt.primary_listing[mkt.sym_idx[key[1]]]])
         planner.pos_fills[key] = q
     planner.effects = [e if len(e) == 5 else (e[0], e[1], e[2], OTC_VENUE, e[3]) for e in p["effects"]]
     planner.settle = p["settle"]
     planner.targets = p["targets"]
-    planner.scripted = p["scripted"]
+    planner.scripted = {}
+    for m, rows in p["scripted"].items():
+        # By symbol since the expiry fix; older state files carry the index.
+        rows = [r if not isinstance(r[3], str) else (r[0], r[1], r[2], mkt.sym_idx[r[3]]) + tuple(r[4:])
+                for r in rows if not isinstance(r[3], str) or r[3] in mkt.sym_idx]
+        if rows:
+            planner.scripted[m] = rows
     planner.planned_through = p["planned_through"]
+    close_expired_positions(mkt, planner)
     return p["pending"]
+
+
+def close_expired_positions(mkt: MarketModel, planner: DeskPlanner):
+    """A resume builds the contract list for its own day, so a contract that
+    expired since the state was saved (or since the last snapshot) is no longer
+    listed. Its position has gone to delivery or cash settlement: it leaves the
+    book, and the next end-of-day snapshot no longer carries it."""
+    held = {k[1] for k in planner.pos} | {k[1] for k in planner.pos_fills} | {e[2] for e in planner.effects}
+    gone = sorted(s for s in held if s not in mkt.sym_idx)
+    if not gone:
+        return
+    planner.pos = {k: q for k, q in planner.pos.items() if k[1] in mkt.sym_idx}
+    planner.pos_fills = {k: q for k, q in planner.pos_fills.items() if k[1] in mkt.sym_idx}
+    planner.effects = [e for e in planner.effects if e[2] in mkt.sym_idx]
+    print(f"[INFO] Expired since the last run, positions closed: {', '.join(gone)}.", flush=True)
 
 
 def restore_from_db(args, prefix: str, mkt: MarketModel, planner: DeskPlanner, start_sec: int):
@@ -2933,6 +2962,7 @@ def restore_from_db(args, prefix: str, mkt: MarketModel, planner: DeskPlanner, s
     for r in deals.itertuples():
         planner._add_pos(str(r.book), str(r.symbol), float(r.qty), OTC_VENUE)
     planner.effects = []
+    close_expired_positions(mkt, planner)
     planner.settle = {str(r.symbol): float(r.price) for r in settle.itertuples()}
     planner.planned_through = start_sec // 60 - 1
     print(f"[INFO] State rebuilt from the database: {len(mid)} quoted contracts, "

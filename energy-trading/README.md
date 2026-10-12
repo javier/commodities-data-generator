@@ -108,7 +108,10 @@ the wall clock. Started with `--incremental true` after a backfill it loads
 planted rows not yet due), catches up the gap since the last backfilled timestamp faster
 than life, then paces itself. No price jump, no position jump at the boundary. Without a
 state file it rebuilds from the database: last mid per contract (levels), last snapshot
-plus today's fills and non-cancelled bookings (positions), last settlements. Anchors are
+plus today's fills and non-cancelled bookings (positions), last settlements. Either way
+the contracts listed are those of the resume day: a position in a contract that expired
+since the backfill or the last run (gasoil's front month, say) has gone to delivery and
+leaves the book, and the log names it. Anchors are
 refreshed from Yahoo every `--yahoo_refresh_secs` (default 300) and the front months are
 pulled gently towards them (two-hour half-life). `--end_ts` stops it; so does Ctrl-C,
 which saves the state file.
