@@ -154,8 +154,13 @@ with the prefix is listed and left alone. `--keep_state_file true` keeps the sta
   |---|---|---|
   | OSS | `TTL 3 MONTHS` | `TTL 3 MONTHS` |
   | OSS, `--short_ttl` | `TTL 7 DAYS` | `TTL 7 DAYS` |
-  | Enterprise | `STORAGE POLICY(TO REMOTE 1 hour, TO PARQUET 2 days, DROP LOCAL 3 months)` | `TTL 3 MONTHS`, `quotes_10s` `TTL 1 MONTH` |
-  | Enterprise, `--short_ttl` | `STORAGE POLICY(TO REMOTE 1 hour, TO PARQUET 2 days, DROP LOCAL 7 days, DROP REMOTE 7 days)` | `TTL 7 DAYS` |
+  | Enterprise | `STORAGE POLICY(TO REMOTE <p>, TO PARQUET <q>, DROP LOCAL 3 months)` | `TTL 3 MONTHS`, `quotes_10s` `TTL 1 MONTH` |
+  | Enterprise, `--short_ttl` | `STORAGE POLICY(TO REMOTE <p>, TO PARQUET <q>, DROP LOCAL 7 days, DROP REMOTE 7 days)` | `TTL 7 DAYS` |
+
+  Each stage of a storage policy must be a whole multiple of the table's partition size,
+  so the early stages follow it: `quotes` (HOUR) `TO REMOTE 1 hour, TO PARQUET 2 days`,
+  the DAY tables `TO REMOTE 1 day, TO PARQUET 2 days`, the WEEK tables
+  `TO REMOTE 1 week, TO PARQUET 1 week`.
 
   On Enterprise the policy tiers partitions to Parquet and object storage and keeps them
   queryable; only `--short_ttl` deletes the remote copy. Materialized views do not take

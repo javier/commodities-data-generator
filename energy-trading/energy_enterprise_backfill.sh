@@ -25,8 +25,9 @@
 # schema differs from its own.
 #
 # Every table is WAL with per-column Parquet encodings. With --enterprise the
-# time-series tables take a storage policy: TO REMOTE 1 hour, TO PARQUET 2 days,
-# DROP LOCAL 3 months, so backfilled partitions (already days old) move to Parquet
+# time-series tables take a storage policy, DROP LOCAL 3 months after TO REMOTE and
+# TO PARQUET stages scaled to each table's partition unit (quotes: 1 hour and 2
+# days), so backfilled partitions (already days old) move to Parquet
 # and object storage within minutes and stay queryable. Materialized views keep a
 # TTL (3 months, the 10-second bars 1 month). Add --short_ttl true to keep
 # everything for 7 days only, remote copies included; then keep the backfill

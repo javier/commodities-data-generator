@@ -620,17 +620,23 @@ def bool_arg(x) -> bool:
 # timestamp and never take retention: any threshold would drop them at once.
 OSS_TTL = "3 MONTHS"
 SHORT_TTL = "7 DAYS"
-ENTERPRISE_POLICY = "TO REMOTE 1 hour, TO PARQUET 2 days, DROP LOCAL 3 months"
-ENTERPRISE_POLICY_SHORT = "TO REMOTE 1 hour, TO PARQUET 2 days, DROP LOCAL 7 days, DROP REMOTE 7 days"
+# Every stage of a storage policy must be a whole multiple of the table's partition
+# size (like a TTL), so the early stages follow the partition unit.
+POLICY_EARLY_STAGES = {
+    "HOUR": "TO REMOTE 1 hour, TO PARQUET 2 days",
+    "DAY": "TO REMOTE 1 day, TO PARQUET 2 days",
+    "WEEK": "TO REMOTE 1 week, TO PARQUET 1 week",
+}
 
 
-def enterprise_policy(short_ttl: bool) -> str:
-    return ENTERPRISE_POLICY_SHORT if short_ttl else ENTERPRISE_POLICY
+def enterprise_policy(short_ttl: bool, partition: str) -> str:
+    drop = "DROP LOCAL 7 days, DROP REMOTE 7 days" if short_ttl else "DROP LOCAL 3 months"
+    return f"{POLICY_EARLY_STAGES[partition]}, {drop}"
 
 
-def table_retention(short_ttl: bool, enterprise: bool) -> str:
+def table_retention(short_ttl: bool, enterprise: bool, partition: str) -> str:
     if enterprise:
-        return f" STORAGE POLICY({enterprise_policy(short_ttl)})"
+        return f" STORAGE POLICY({enterprise_policy(short_ttl, partition)})"
     return f" TTL {SHORT_TTL if short_ttl else OSS_TTL}"
 
 
@@ -734,7 +740,9 @@ def table_ddl(args, prefix: str) -> dict:
     by month: the small tables use WEEK, which takes both 7 days and 3 months.
     """
     TS, SYM, SYML, DEF = _parquet_clauses(args.parquet_encodings)
-    ret = table_retention(args.short_ttl, args.enterprise)
+    ret_hour = table_retention(args.short_ttl, args.enterprise, "HOUR")
+    ret_day = table_retention(args.short_ttl, args.enterprise, "DAY")
+    ret_week = table_retention(args.short_ttl, args.enterprise, "WEEK")
     t = lambda n: table_name(n, prefix)
     ddl = {}
 
@@ -812,7 +820,7 @@ def table_ddl(args, prefix: str) -> dict:
       bid_size DOUBLE{DEF},
       ask_size DOUBLE{DEF},
       source   SYMBOL CAPACITY 16{SYML}
-    ) TIMESTAMP(ts) PARTITION BY HOUR{ret} WAL
+    ) TIMESTAMP(ts) PARTITION BY HOUR{ret_hour} WAL
       DEDUP UPSERT KEYS(ts, symbol, source)"""
 
     # Curve builder output: every contract on every curve, once a minute.
@@ -828,7 +836,7 @@ def table_ddl(args, prefix: str) -> dict:
       venue     SYMBOL CAPACITY 8{SYML},
       version   INT{DEF},
       marked_by SYMBOL CAPACITY 16{SYML}
-    ) TIMESTAMP(ts) PARTITION BY DAY{ret} WAL
+    ) TIMESTAMP(ts) PARTITION BY DAY{ret_day} WAL
       DEDUP UPSERT KEYS(ts, symbol, version)"""
 
     # Official daily settlements, published after the close.
@@ -841,7 +849,7 @@ def table_ddl(args, prefix: str) -> dict:
       volume        DOUBLE{DEF},
       open_interest DOUBLE{DEF},
       source        SYMBOL CAPACITY 16{SYML}
-    ) TIMESTAMP(ts) PARTITION BY WEEK{ret} WAL
+    ) TIMESTAMP(ts) PARTITION BY WEEK{ret_week} WAL
       DEDUP UPSERT KEYS(ts, symbol)"""
 
     # Implied vol surface: one row per contract and delta bucket, every 5 minutes.
@@ -855,7 +863,7 @@ def table_ddl(args, prefix: str) -> dict:
       iv           DOUBLE{DEF},
       source       SYMBOL CAPACITY 16{SYML},
       version      INT{DEF}
-    ) TIMESTAMP(ts) PARTITION BY DAY{ret} WAL
+    ) TIMESTAMP(ts) PARTITION BY DAY{ret_day} WAL
       DEDUP UPSERT KEYS(ts, symbol, delta_bucket, version)"""
 
     # Fair-value model output, champion and challenger side by side, every minute.
@@ -867,7 +875,7 @@ def table_ddl(args, prefix: str) -> dict:
       symbol        SYMBOL CAPACITY 2048{SYM},
       model_px      DOUBLE{DEF},
       inputs_ts     TIMESTAMP{TS}
-    ) TIMESTAMP(ts) PARTITION BY DAY{ret} WAL
+    ) TIMESTAMP(ts) PARTITION BY DAY{ret_day} WAL
       DEDUP UPSERT KEYS(ts, model_version, symbol)"""
 
     # Day-ahead hourly auction prices. These go negative.
@@ -879,7 +887,7 @@ def table_ddl(args, prefix: str) -> dict:
       volume       DOUBLE{DEF},
       source       SYMBOL CAPACITY 16{SYML},
       published_ts TIMESTAMP{TS}
-    ) TIMESTAMP(ts) PARTITION BY WEEK{ret} WAL
+    ) TIMESTAMP(ts) PARTITION BY WEEK{ret_week} WAL
       DEDUP UPSERT KEYS(ts, market)"""
 
     # Exchange executions as the gateway reports them. Voice and bilateral
@@ -897,7 +905,7 @@ def table_ddl(args, prefix: str) -> dict:
       order_id UUID{DEF},
       trade_id UUID{DEF},
       passive  BOOLEAN{DEF}
-    ) TIMESTAMP(ts) PARTITION BY DAY{ret} WAL
+    ) TIMESTAMP(ts) PARTITION BY DAY{ret_day} WAL
       DEDUP UPSERT KEYS(ts, trade_id)"""
 
     # Trade capture log, bitemporal. Booking time is the designated timestamp;
@@ -919,7 +927,7 @@ def table_ddl(args, prefix: str) -> dict:
       counterparty SYMBOL CAPACITY 256{SYML},
       booked_by    SYMBOL CAPACITY 64{SYML},
       reason       SYMBOL CAPACITY 16{SYML}
-    ) TIMESTAMP(booked_ts) PARTITION BY DAY{ret} WAL
+    ) TIMESTAMP(booked_ts) PARTITION BY DAY{ret_day} WAL
       DEDUP UPSERT KEYS(booked_ts, trade_id, version)"""
 
     # End-of-day positions per book, contract and venue at 00:00 UTC, at
@@ -935,7 +943,7 @@ def table_ddl(args, prefix: str) -> dict:
       qty       DOUBLE{DEF},
       settle_px DOUBLE{DEF},
       source    SYMBOL CAPACITY 16{SYML}
-    ) TIMESTAMP(ts) PARTITION BY WEEK{ret} WAL
+    ) TIMESTAMP(ts) PARTITION BY WEEK{ret_week} WAL
       DEDUP UPSERT KEYS(ts, book, symbol, venue)"""
 
     # What the generator planted and when: the presenter's cheat sheet.
@@ -993,7 +1001,7 @@ def ensure_tables_and_views(args, prefix: str):
                 if args.enterprise and "STORAGE POLICY" in sql:
                     # Fallback for a parser that wants the policy as a separate
                     # statement: create bare, then ALTER.
-                    policy = enterprise_policy(args.short_ttl)
+                    policy = re.search(r"STORAGE POLICY\((.*?)\)", sql).group(1)
                     print(f"[DDL] {t(name)}: inline storage policy rejected ({e}); "
                           f"creating without it and applying ALTER TABLE SET STORAGE POLICY", flush=True)
                     conn.execute(sql.replace(f" STORAGE POLICY({policy})", ""))
