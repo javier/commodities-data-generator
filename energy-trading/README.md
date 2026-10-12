@@ -24,6 +24,7 @@ act something to find. Everything is generic: no real desk, no real names.
 | `check.py` | Smoke test: runs every cell and prints `ok` with row count and timing, or `FAIL`; `--dump` and `--compare` check a change against a saved run |
 | `energy_backfill.sh`, `energy_realtime.sh` | Local runners (QuestDB OSS on `127.0.0.1:9000`) |
 | `energy_enterprise_backfill.sh`, `energy_enterprise_realtime.sh` | Cluster runners (QWP over TLS, token auth, VPC-internal endpoints) |
+| `energy_wipe.py` | Drops the whole dataset for one prefix, after you type YES |
 | `requirements.txt` | `questdb[dataframe]>=5.0`, numpy, pandas, yfinance |
 | `grafana/` | The Energy Trading Desk dashboard for the live session, its README and a screenshot |
 
@@ -111,6 +112,23 @@ plus today's fills and non-cancelled bookings (positions), last settlements. Anc
 refreshed from Yahoo every `--yahoo_refresh_secs` (default 300) and the front months are
 pulled gently towards them (two-hour half-life). `--end_ts` stops it; so does Ctrl-C,
 which saves the state file.
+
+### Starting over: `energy_wipe.py`
+
+Drops every table, materialized view, live view and plain view the generator creates for
+one prefix, and deletes the real-time state file, so the next backfill starts clean. It
+takes the generator's connection flags and `--prefix` (default `energy_`), lists what
+exists, and drops nothing unless you type `YES` in capitals:
+
+```bash
+python energy_wipe.py                                    # local, energy_
+python energy_wipe.py --prefix energy_test_
+python energy_wipe.py --host 172.31.42.41:9000,172.31.41.35:9000,10.0.0.8:9000 \
+  --qwp_tls true --tls_verify unsafe_off --token_file ~/qwp_token.txt
+```
+
+It drops by exact name, the objects the generator creates; anything else that starts
+with the prefix is listed and left alone. `--keep_state_file true` keeps the state file.
 
 ### Schema conventions
 
