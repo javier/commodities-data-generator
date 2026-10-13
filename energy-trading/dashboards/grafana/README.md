@@ -24,10 +24,11 @@ with plugin `questdb-questdb-datasource` 0.1.8, against QuestDB 10.0.2.
 The hidden `prefix` variable (`energy_`) is put in front of every table and view name;
 change it if the generator ran with a different `--prefix`.
 
-The refresh picker offers 250 ms, 500 ms and 750 ms as well as the usual intervals. Grafana
-only honours them when the server's `min_refresh_interval` is 250 ms or lower; its
-default is 5 s (`[dashboards] min_refresh_interval` in `grafana.ini`, or
-`GF_DASHBOARDS_MIN_REFRESH_INTERVAL=250ms` for a container).
+The dashboard refreshes every 500 ms by default, and the refresh picker offers 250 ms,
+500 ms and 750 ms as well as the usual intervals. Grafana only honours intervals below its
+server's `min_refresh_interval`, whose default is 5 s, and otherwise refreshes at that
+minimum: set it to 250 ms or lower (`[dashboards] min_refresh_interval` in `grafana.ini`,
+or `GF_DASHBOARDS_MIN_REFRESH_INTERVAL=250ms` for a container).
 
 The layout is checked on a 1920 px wide screen (1080p) and wider: every table fills its
 panel and shows all its columns without scrolling sideways. On a narrower screen the
@@ -125,10 +126,10 @@ loads).
 
 ## The two demo moves
 
-1. **Live.** Range "Last 6 hours", refresh 1 s, with `energy_realtime.sh` running. The
-   front months tick on every refresh, the blotter's marks and PnL move with the market,
-   the limits move with every fill, the PnL lines' last segment moves within seconds, and
-   the curve evolution adds a column on its interval.
+1. **Live.** Range "Last 6 hours", the default 500 ms refresh, with `energy_realtime.sh`
+   running. The front months tick on every refresh, the blotter's marks and PnL move with
+   the market, the limits move with every fill, the PnL lines' last segment moves within
+   seconds, and the curve evolution adds a column on its interval.
 2. **Reconstruction.** Pause the refresh, switch on "Planted events", and set the range
    to 12:00 to 14:00 UTC on the demo day. The blotter and the limits show the desk as of 14:00; the as-known line
    steps at 13:20, when the LNG fill booked with ten times its quantity at 10:05 is
