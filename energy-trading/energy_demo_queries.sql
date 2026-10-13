@@ -1200,8 +1200,8 @@ both AS (
          b1.qty AS q1, b1.px AS p1, b2.qty AS q2, b2.px AS p2, b2.trade_ts AS ts2
   FROM b1 FULL JOIN b2 ON b1.trade_id = b2.trade_id
 ),
-m1 AS (SELECT symbol, price FROM energy_curve_marks WHERE ts <= @t1 AND ts > dateadd('m', -5, @t1) LATEST ON ts PARTITION BY symbol),
-m2 AS (SELECT symbol, price FROM energy_curve_marks WHERE ts <= @t2 AND ts > dateadd('m', -5, @t2) LATEST ON ts PARTITION BY symbol),
+m1 AS (SELECT symbol, price FROM energy_curve_marks WHERE ts <= @t1 AND ts > dateadd('h', -1, @t1) LATEST ON ts PARTITION BY symbol),
+m2 AS (SELECT symbol, price FROM energy_curve_marks WHERE ts <= @t2 AND ts > dateadd('h', -1, @t2) LATEST ON ts PARTITION BY symbol),
 f1 AS (SELECT symbol, mid(bid, ask) AS usd FROM energy_quotes
        WHERE curve = 'FX' AND ts <= @t1 AND ts > dateadd('h', -1, @t1) LATEST ON ts PARTITION BY symbol),
 f2 AS (SELECT symbol, mid(bid, ask) AS usd FROM energy_quotes
@@ -1245,8 +1245,8 @@ both AS (
          b1.qty AS q1, b1.px AS p1, b2.qty AS q2, b2.px AS p2, b2.trade_ts AS ts2
   FROM b1 FULL JOIN b2 ON b1.trade_id = b2.trade_id
 ),
-m1 AS (SELECT symbol, price FROM energy_curve_marks WHERE ts <= @t1 AND ts > dateadd('m', -5, @t1) LATEST ON ts PARTITION BY symbol),
-m2 AS (SELECT symbol, price FROM energy_curve_marks WHERE ts <= @t2 AND ts > dateadd('m', -5, @t2) LATEST ON ts PARTITION BY symbol),
+m1 AS (SELECT symbol, price FROM energy_curve_marks WHERE ts <= @t1 AND ts > dateadd('h', -1, @t1) LATEST ON ts PARTITION BY symbol),
+m2 AS (SELECT symbol, price FROM energy_curve_marks WHERE ts <= @t2 AND ts > dateadd('h', -1, @t2) LATEST ON ts PARTITION BY symbol),
 f1 AS (SELECT symbol, mid(bid, ask) AS usd FROM energy_quotes
        WHERE curve = 'FX' AND ts <= @t1 AND ts > dateadd('h', -1, @t1) LATEST ON ts PARTITION BY symbol),
 f2 AS (SELECT symbol, mid(bid, ask) AS usd FROM energy_quotes
