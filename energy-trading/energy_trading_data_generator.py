@@ -3253,7 +3253,7 @@ def main():
                         "or, failing that, from the database.")
     p.add_argument("--create_views", type=bool_arg, default=True, help="Materialized views.")
     p.add_argument("--create_live_view", type=bool_arg, default=True, help="The positions live view (beta).")
-    p.add_argument("--create_plain_views", type=bool_arg, default=True, help="Plain views: ledger, tenors, instrument_master and the parameterised *_asof and *_day views.")
+    p.add_argument("--create_plain_views", type=bool_arg, default=True, help="Plain views: ledger, tenors, instrument_master, lineage and the parameterised *_asof and *_day views.")
     p.add_argument("--tables", type=str, default="all", help="Comma-separated base tables to create and populate.")
     p.add_argument("--parquet_encodings", type=bool_arg, default=True, help="Per-column PARQUET(...) encodings in the DDL.")
     p.add_argument("--short_ttl", type=bool_arg, default=False,

@@ -16,7 +16,7 @@
 #   energy_tenors, energy_instrument_master, energy_marks_asof, energy_marks_live, energy_fx_asof,
 #   energy_usd_factor_asof, energy_tenors_asof, energy_book_asof,
 #   energy_book_restated, energy_mid_1m_day, energy_positions_running_day,
-#   energy_model_graded_day, energy_strip_gaps_day              (views)
+#   energy_model_graded_day, energy_strip_gaps_day, energy_lineage  (views)
 #
 # If the cluster already holds energy_ objects from before the listings change
 # (instruments, limits, curve_marks, position_snapshots and quotes_1m all changed
