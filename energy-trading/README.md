@@ -45,18 +45,24 @@ python check.py               # every cell should print ok
 Open the Web Console and paste cells from `energy_demo_queries.sql`, or load the whole
 file. Cell `0a_planted_events` is the presenter's cheat sheet; keep it open.
 
-The backfill rewrites the `@name := '...'` lines in the query pack (demo day, planted-event
-timestamps, front-month symbols) so the cells point at the data it just loaded. In a
-notebook you can define them once as notebook variables and delete the `DECLARE` lines.
+Every cell declares the day it is about. A cell that only filters by the day
+(`ts IN @demo_day`) declares `@demo_day := '$today'`: change it to `'$yesterday'`,
+`'$today-4d'` or a date such as `'2026-08-12'`. A cell that computes with the day (view
+parameters, event times) needs a date literal, `@demo_day := '2026-10-07'`, and every other
+time in it (`@asof`, `@t1`, `@t2`, `@repricing`, the outage) is an offset from `@demo_day`,
+so changing that one line moves the whole cell. The backfill rewrites the date literals and
+the front-month symbols to the data it just loaded, and leaves `'$today'` alone. In a
+notebook you can define the variables once as notebook variables and delete the `DECLARE`
+lines.
 
 ### Timing the session
 
-Planted events sit at fixed UTC times on the demo day (see below). If the session runs
-before 15:00 UTC, the events at 13:20, 14:05, 14:10 and 14:30 have not happened yet:
-the real-time generator still emits them at their wall-clock time during the session,
-because the storyline is a function of the clock, not of the backfill. The reconstruction
-cells (`6a` to `6c`) use `@asof` = 12:00 and `@t2` = 15:00 by default; before 15:00 the
-"cancellations" and "amendments" columns of `6c` simply fill in as the afternoon unfolds.
+Planted events sit at fixed UTC times on the demo day (see below), and the last one lands
+at 11:15 UTC: 13:15 in Madrid in summer time, 12:15 in winter. A session from then on sees
+the whole story. An earlier session sees the events that have happened so far: the
+real-time generator emits the rest at their wall-clock time, because the storyline is a
+function of the clock, not of the backfill. The reconstruction cells (`6a` to `6c`) use
+`@asof` = `@t1` = 10:00 and `@t2` = 11:30 on the demo day.
 
 To plant the story on a later day (backfill the days before the session, story on the
 session day): `DEMO_DAY=2026-10-21 END_TS=2026-10-21T06:00:00Z ./energy_backfill.sh`,
@@ -413,15 +419,15 @@ and the reconstruction.
 | Time | What | Shows up in |
 |---|---|---|
 | day minus 2, 01:00 to 05:00 | Windy night: UK day-ahead hours clear negative | `3e` |
-| 07:40 to 08:10, unwound by 11:30 | CRUDE buys the Brent front month to about 3M bbl against a 2M limit | `2a`, `2b` |
-| 09:10 deal, 14:30 booking | UK_POWER sells 100 MW of a power season by voice, booked 5h20m late | `6a`, `6b`, `6c`, `6d` |
-| 09:15 to 09:45 | Manual mark on the first TTF quarter 2.50 EUR above its months (trader_11), corrected as version 2 at 09:45 | `4d` |
-| 10:00 to 10:03 | The EEX quote feed (TTF, EUA, UK power) goes silent; ICE keeps ticking, marks stay `MARKET` from the primary venue, grading carries on | `7d` |
+| 07:00 to 07:30, unwound by 10:00 | CRUDE buys the Brent front month to about 3M bbl against a 2M limit | `2a`, `2b` |
+| 07:30 deal, 11:15 booking | UK_POWER sells 100 MW of a power season by voice, booked 3h45m late | `6a`, `6b`, `6c`, `6d` |
+| 08:00 to 08:30 | Manual mark on the first TTF quarter 2.50 EUR above its months (trader_11), corrected as version 2 at 08:30 | `4d` |
+| 08:45 to 08:48 | The EEX quote feed (TTF, EUA, UK power) goes silent; ICE keeps ticking, marks stay `MARKET` from the primary venue, grading carries on | `7d` |
 | 07:00 to 17:00, every weekday | About three times a day per dual-listed front month, EEX sits 2 to 4 ticks off the primary for 5 to 30 seconds (five on TTF Nov-26 on the demo day) | `5f` |
-| 10:05, amended 13:20 | LNG fill booked with 10x the quantity by STP | `6b`, `6c` |
-| 10:30, cancelled 14:05 | EU_GAS broker trade on the TTF quarter booked twice | `6b`, `6c` |
-| 11:00 | Cold-snap forecast: Nov to Feb gas and power prices step up 8% at the front over 20 minutes (`--winter_repricing_pct`), damped along the curve; the champion model never adapts, the challenger refits on the hour | `7a`, `7b` |
-| 14:10 to 14:30 | Bad ATM vol mark on the fourth TTF month (minus 8 points) breaks calendar no-arbitrage, corrected as version 2 | `7c` |
+| 09:00, amended 10:45 | LNG fill booked with 10x the quantity by STP | `6b`, `6c` |
+| 09:15, cancelled 11:00 | EU_GAS broker trade on the TTF quarter booked twice | `6b`, `6c` |
+| 09:30 | Cold-snap forecast: Nov to Feb gas and power prices step up 8% at the front over 20 minutes (`--winter_repricing_pct`), damped along the curve; the champion model never adapts, the challenger refits on the hour | `7a`, `7b` |
+| 10:30 to 10:50 | Bad ATM vol mark on the fourth TTF month (minus 8 points) breaks calendar no-arbitrage, corrected as version 2 | `7c` |
 
 All of them are listed in `demo_events` (cell `0a`).
 
@@ -563,7 +569,7 @@ drill-down sibling right below them.
    ordinary voice deal done before `@asof` and booked after it.
 7. **Model validation.** `7a` champion versus challenger (bias, RMSE, share inside the
    quote, by season, before and after the repricing: the champion's winter bias after
-   11:00 is about -500 bps, the challenger's about -90 in its one lagging hour and zero
+   the repricing is about -500 bps, the challenger's about -90 in its one lagging hour and zero
    after); `7a_by_tenor` the same by relative tenor (the error sits on M1 to M4, the
    winter months, and fades along them); `7a_by_symbol` per contract. `7b` hourly drift.
    `7c` calendar-arbitrage violations on the vol surface as published and

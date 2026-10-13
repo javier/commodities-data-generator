@@ -1479,20 +1479,22 @@ FIDX = {f: i for i, f in enumerate(FACTOR_NAMES)}
 
 
 class StoryClock:
-    """Where the planted events sit on the clock (UTC, demo day)."""
+    """Where the planted events sit on the clock (UTC, demo day). Every event and
+    every correction lands by 11:15 UTC, so a demo from 13:15 Madrid time in summer
+    (12:15 in winter) sees the whole story; the windy night is two days before."""
 
     def __init__(self, demo_day: datetime.date):
         self.demo_day = demo_day
         d = datetime.datetime(demo_day.year, demo_day.month, demo_day.day, tzinfo=UTC)
         at = lambda h, m=0: int((d + datetime.timedelta(hours=h, minutes=m)).timestamp())
-        self.breach_start, self.breach_peak, self.breach_end = at(7, 40), at(8, 10), at(11, 30)
-        self.bad_mark_start, self.bad_mark_end = at(9, 15), at(9, 45)
-        self.fat_finger_fill, self.fat_finger_fix = at(10, 5), at(13, 20)
-        self.duplicate_deal, self.duplicate_fix = at(10, 30), at(14, 5)
-        self.late_deal, self.late_booking = at(9, 10), at(14, 30)
-        self.repricing = at(11, 0)
-        self.bad_iv_start, self.bad_iv_end = at(14, 10), at(14, 30)
-        self.outage_start, self.outage_end = at(10, 0), at(10, 3)
+        self.breach_start, self.breach_peak, self.breach_end = at(7, 0), at(7, 30), at(10, 0)
+        self.late_deal, self.late_booking = at(7, 30), at(11, 15)
+        self.bad_mark_start, self.bad_mark_end = at(8, 0), at(8, 30)
+        self.outage_start, self.outage_end = at(8, 45), at(8, 48)
+        self.fat_finger_fill, self.fat_finger_fix = at(9, 0), at(10, 45)
+        self.duplicate_deal, self.duplicate_fix = at(9, 15), at(11, 0)
+        self.repricing = at(9, 30)
+        self.bad_iv_start, self.bad_iv_end = at(10, 30), at(10, 50)
         self.windy_day = demo_day - datetime.timedelta(days=2)
         self.day_start = at(0)
 
@@ -2079,8 +2081,9 @@ class DeskPlanner:
             (s.windy_day, "3_vol", f"Windy night: UK day-ahead hours 01:00 to 05:00 on {s.windy_day} clear negative"),
             (s.breach_start, "2_exposure", f"CRUDE buys {sym('BRENT', 'M')} to about 3.0M bbl against a 2.0M limit, "
                                            f"unwinds to 0.4M by {iso(s.breach_end)}"),
-            (s.late_deal, "6_recon", f"UK_POWER sells 100 MW {sym('UKPWR', 'S', 1)} by voice (OTC), booked 5h20m late "
-                                     f"at {iso(s.late_booking)}"),
+            (s.late_deal, "6_recon", f"UK_POWER sells 100 MW {sym('UKPWR', 'S', 1)} by voice (OTC), booked "
+                                     f"{(s.late_booking - s.late_deal) // 3600}h{(s.late_booking - s.late_deal) % 3600 // 60:02d}m "
+                                     f"late at {iso(s.late_booking)}"),
             (s.bad_mark_start, "4_curves", f"Manual mark on {sym('TTF', 'Q')} +2.50 EUR above its months (trader_11), "
                                            f"corrected (version 2) at {iso(s.bad_mark_end)}"),
             (s.outage_start, "7_models", "3-minute outage of the EEX quote feed: EEX-listed TTF, EUA and UK power go "
@@ -2105,11 +2108,12 @@ class DeskPlanner:
         ci = self._nth("BRENT", "M", 0)
         net = self._net("CRUDE", "BRENT")
         lot = float(self.mkt.inst.lot_size.iat[ci])
+        s = self.story
         if phase == "build":
-            needed, clips, span = 3_050_000 - net, 60, 30
+            needed, clips, span = 3_050_000 - net, 60, (s.breach_peak - s.breach_start) // 60
             side = 1
         else:
-            needed, clips, span = net - 400_000, 100, 200
+            needed, clips, span = net - 400_000, 100, (s.breach_end - s.breach_peak) // 60
             side = -1
             self.targets[("CRUDE", "BRENT")] = 400_000.0
         if needed <= 0:
@@ -2834,30 +2838,25 @@ def ingest_worker(args, mkt, story, desk, slices, process_idx, pause_event):
 # ----------------------------
 
 def update_demo_sql(path, values):
-    """Point the @name := '...' variables in demo.sql at the data just generated."""
+    """Point the @name := '...' variables in demo.sql at the data just generated.
+    A value written in tick syntax ('$today', '$yesterday', '$today-4d') is left
+    alone: it already follows the clock."""
     if not os.path.exists(path):
         print(f"({path} not found, skipping variable update)")
         return
     text = open(path).read()
     for name, value in values.items():
-        text = re.sub(rf"(@{name}\s*:=\s*)'[^']*'", lambda m: f"{m.group(1)}'{value}'", text)
+        text = re.sub(rf"(@{name}\s*:=\s*)'(?!\$)[^']*'", lambda m: f"{m.group(1)}'{value}'", text)
     open(path, "w").write(text)
     print(f"Updated {path}: " + ", ".join(f"@{k}={v}" for k, v in values.items()))
 
 
 def demo_variables(mkt: MarketModel, story: StoryClock, end_ns: int) -> dict:
-    iso = lambda sec: datetime.datetime.fromtimestamp(sec, UTC).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+    """The demo day and the front-month symbols. The pack's other times (@asof, @t1,
+    @t2, the repricing, the outage) are offsets from @demo_day, so they follow it."""
     nth = lambda c, g, k=0: mkt.sym[sorted(np.where((mkt.curve == c) & (mkt.gran == g))[0], key=lambda i: mkt.dstart[i])[k]]
-    asof = story.day_start + 12 * 3600
-    t2 = min(end_ns // NS // 60 * 60, story.day_start + 15 * 3600)
-    if t2 <= asof:
-        t2 = asof + 1800
     return {
-        "demo_day": story.demo_day.isoformat(), "asof": iso(asof), "t1": iso(asof), "t2": iso(t2),
-        "bad_mark_start": iso(story.bad_mark_start), "bad_mark_end": iso(story.bad_mark_end),
-        "outage_start": iso(story.outage_start), "outage_end": iso(story.outage_end),
-        "iv_start": iso(story.bad_iv_start), "iv_end": iso(story.bad_iv_end), "repricing": iso(story.repricing),
-        "windy_day": story.windy_day.isoformat(),
+        "demo_day": story.demo_day.isoformat(),
         "brent": nth("BRENT", "M"), "wti": nth("WTI", "M"), "gasoil": nth("GASOIL", "M"),
         "ttf": nth("TTF", "M"), "nbp": nth("NBP", "M"), "jkm": nth("JKM", "M"), "pwr": nth("UKPWR", "M"),
         "uka": nth("UKA", "Z"), "eua": nth("EUA", "Z"), "ttf_q1": nth("TTF", "Q"), "pwr_win": nth("UKPWR", "S", 1),

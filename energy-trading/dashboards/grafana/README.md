@@ -112,7 +112,8 @@ Notes on some of them:
   bookings. The lines meet at the right edge.
 - PnL explain splits the change in value of the day's deals between the range start and
   end into market move, new trades, late bookings, amendments and cancellations, which
-  add up to the total. Example, 12:00 to 15:00 on the demo day, all books (USD):
+  add up to the total. Example from a scale 1 dataset loaded before the storyline moved
+  to the morning, 12:00 to 15:00 on its demo day, all books (USD):
   market move -2,681,727, new trades 356,094, late bookings 157,946, amendments -730,544,
   cancellations -236,450; sum -3,134,681, the total.
 
@@ -131,12 +132,12 @@ loads).
    the market, the limits move with every fill, the PnL lines' last segment moves within
    seconds, and the curve evolution adds a column on its interval.
 2. **Reconstruction.** Pause the refresh, switch on "Planted events", and set the range
-   to 12:00 to 14:00 UTC on the demo day. The blotter and the limits show the desk as of 14:00; the as-known line
-   steps at 13:20, when the LNG fill booked with ten times its quantity at 10:05 is
-   corrected, and PnL explain carries that correction under amendments. Then move the range end to 14:35:
-   the duplicate TTF quarter cancelled at 14:05 lands under cancellations, and the UK
-   power season dealt at 09:10 and booked at 14:30 lands under late bookings and in the
-   restated line.
+   to 09:30 to 10:50 UTC on the demo day. The blotter and the limits show the desk as of
+   10:50; the as-known line steps at 10:45, when the LNG fill booked with ten times its
+   quantity at 09:00 is corrected, and PnL explain carries that correction under
+   amendments. Then move the range end to 11:20: the duplicate TTF quarter cancelled at
+   11:00 lands under cancellations, and the UK power season dealt at 07:30 and booked at
+   11:15 lands under late bookings and in the restated line.
 
 A cancellation or amendment shows in PnL explain only when the trade existed at the range
 start: a deal booked and cancelled inside the range was never in the opening book.
