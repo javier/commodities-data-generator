@@ -111,12 +111,13 @@ Notes on some of them:
   market move -2,681,727, new trades 356,094, late bookings 157,946, amendments -730,544,
   cancellations -236,450; sum -3,134,681, the total.
 
-The planted events from `demo_events` appear as annotations on the time-series panels,
-with the act as the marker's tag. It is one query, and its toggle is hidden from the
-controls bar, on purpose: Grafana re-runs annotation queries on every refresh and a
-visible toggle shows a loading spinner each time, while the variables (`book`, `curve`,
-the datasource) refresh only when the dashboard loads. To switch the markers off, use
-Dashboard settings > Annotations > "Planted events".
+The planted events from `demo_events` can be shown as annotations on the time-series
+panels, with the act as the marker's tag: the "Planted events" toggle in the controls
+bar. It is off by default. Grafana re-runs annotation queries on every refresh and
+redraws the markers each time, so at 1-second refresh they blink; switched off, the
+query does not run at all. Switch it on with the refresh paused, for the reconstruction
+(the variables, `book`, `curve` and the datasource, refresh only when the dashboard
+loads).
 
 ## The two demo moves
 
@@ -124,8 +125,8 @@ Dashboard settings > Annotations > "Planted events".
    front months tick on every refresh, the blotter's marks and PnL move with the market,
    the limits move with every fill, the PnL lines' last segment moves within seconds, and
    the curve evolution adds a column on its interval.
-2. **Reconstruction.** Pause the refresh and set the range to 12:00 to 14:00 UTC on the
-   demo day. The blotter and the limits show the desk as of 14:00; the as-known line
+2. **Reconstruction.** Pause the refresh, switch on "Planted events", and set the range
+   to 12:00 to 14:00 UTC on the demo day. The blotter and the limits show the desk as of 14:00; the as-known line
    steps at 13:20, when the LNG fill booked with ten times its quantity at 10:05 is
    corrected, and PnL explain carries that correction under amendments. Then move the range end to 14:35:
    the duplicate TTF quarter cancelled at 14:05 lands under cancellations, and the UK

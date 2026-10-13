@@ -51,8 +51,8 @@
           "type": "questdb-questdb-datasource",
           "uid": "${DS_QUESTDB}"
         },
-        "enable": true,
-        "hide": true,
+        "enable": false,
+        "hide": false,
         "iconColor": "#FF9830",
         "target": {
           "refId": "Anno",
