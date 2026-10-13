@@ -668,8 +668,9 @@ are in the [Grafana README](dashboards/grafana/README.md).
 
 [`dashboards/questdb_console/energy_trading_notebook.json`](dashboards/questdb_console/energy_trading_notebook.json)
 is the same desk as a QuestDB Web Console notebook, loaded with **Import tabs** from the
-console's tab menu. It has seven of the eight panels (no curve evolution heatmap) and
-takes its as-of instant, book and curve from notebook variables; the differences are in
+console's tab menu. It has seven of the Grafana panels (no curve evolution heatmap), plus
+1-minute candles for the front month of the selected curve, and takes its as-of instant,
+book and curve from notebook variables; the differences are in
 the [notebook README](dashboards/questdb_console/README.md).
 
 ![Energy Trading Dashboard notebook in the QuestDB Web Console](dashboards/questdb_console/screenshot.png)

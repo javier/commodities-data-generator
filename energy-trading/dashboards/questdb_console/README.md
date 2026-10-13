@@ -36,7 +36,8 @@ dragging the end of the Grafana range.
 
 ## How it differs from the Grafana dashboard
 
-- Seven cells: there is no curve evolution heatmap.
+- Eight cells, not quite the same eight: there is no curve evolution heatmap, and there
+  is a chart Grafana does not have, 1-minute candles for the front month of `@curve`.
 - One book or all of them, where Grafana takes any selection of books.
 - No planted-event markers on the charts.
 - Numbers are shown as the query returns them: no units, currency signs or `K`/`M`
