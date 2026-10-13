@@ -33,6 +33,59 @@ Tested end to end on QuestDB 10.0.1 (the `questdb/questdb:10.0.1` image) and on 
 (WebSocket) for both SQL and ingestion through a single `questdb.connect()` handle; no
 PGWire, no ILP/HTTP.
 
+## Dataset at a glance
+
+Three reference tables say what can be traded, six market tables record what the market
+did, four desk tables record what the desk did, and everything joins on the contract
+`symbol`. Every table carries the `--prefix` (`energy_` by default).
+
+```
+REFERENCE (what can be traded)       MARKET (what the market did)             DESK (what the desk did)
+┌──────────────┐                     ┌────────────────┐                       ┌────────────────────┐
+│ instruments  │◄── symbol ──────────┤ quotes         │ tick-level bid/ask    │ fills              │
+│ listings     │◄── symbol, venue ───┤ curve_marks    │ curve mark per minute │ trade_events       │
+│ limits       │◄── book, curve ─┐   │ settlements    │ daily official close  │ position_snapshots │
+└──────────────┘                 │   │ iv_marks       │ implied vol surface   │ demo_events        │
+                                 │   │ model_prices   │ two pricing models    └────────────────────┘
+                                 │   │ da_prices      │ UK day-ahead power             │
+                                 │   └────────────────┘                                │
+                                 └──────────────────────────── book, curve ────────────┘
+   DERIVED: materialized views (OHLC bars), live views (running positions),
+            plain views (marks as of a time, the book as known versus restated, lineage)
+```
+
+| Table | What is in it |
+|---|---|
+| `instruments` | One row per contract: curve, delivery period, unit, currency. The risk object |
+| `listings` | Where each contract trades: venue, exchange symbol, clearing house, primary venue |
+| `limits` | Maximum position per book and curve |
+| `quotes` | Top-of-book bid and ask per listing, tick by tick. By far the largest table |
+| `curve_marks` | The desk's mark for every contract each minute, versioned when a mark is corrected |
+| `settlements` | Official daily settlement prices |
+| `iv_marks` | Implied volatility by contract and delta, every five minutes |
+| `model_prices` | Fair-value prices from two pricing models, for validation |
+| `da_prices` | UK day-ahead hourly power prices |
+| `fills` | Exchange executions: book, trader, venue, price, quantity |
+| `trade_events` | The booking log: every version of every deal, including late bookings, amendments and cancels |
+| `position_snapshots` | End-of-day positions per book, contract and venue |
+| `demo_events` | The planted storyline: the presenter's answer key, not data a desk would have |
+
+Three things make it more than a price feed:
+
+- Nothing is overwritten. In `curve_marks`, `iv_marks` and `trade_events` a correction is
+  a new row with `version + 1`, and the version is part of the dedup key, so the original
+  stays next to it; every other table is append-only. Any past moment can be
+  reconstructed.
+- `trade_events` has two times: when a deal was done and when it was booked. That is what
+  makes the book as known versus as restated possible.
+- One contract trades on several venues, so risk is per contract (`instruments`) while
+  quotes and fills are per venue (`listings`).
+
+The planted incidents live in the tables where a real desk would see them: the limit
+breach in `fills`, the booking errors in `trade_events`, the bad marks in `curve_marks`
+and `iv_marks`, the feed outage as missing `quotes`, the cold snap in every price.
+`demo_events` only describes them (see "The planted storyline" below).
+
 ## Quick start
 
 ```bash
