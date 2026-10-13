@@ -1,7 +1,7 @@
 -- =====================================================================================
 -- Energy trading desk: real-time analytics on QuestDB
--- Seven acts, one cell per analytic, each cell self-contained. Run everything with
--- check.py, or paste cells into the Web Console.
+-- Seven acts of desk analytics and an eighth on lineage, one cell per analytic, each
+-- cell self-contained. Run everything with check.py, or paste cells into the Web Console.
 --
 -- Variables are DECLAREd at the top of each cell. Every value written as
 -- @name := '...' (demo day, planted-event timestamps, front-month symbols) is
@@ -95,43 +95,6 @@ JOIN last_q q ON q.symbol = l.symbol AND q.source = l.exchange;
 -- energy_book_asof and SHOW CREATE VIEW energy_book_restated are the two definitions
 -- the whole reconstruction rests on, and they differ by one line.
 SELECT view_name, view_status FROM views() WHERE view_name LIKE 'energy_%' ORDER BY view_name;
-
--- @@ 0f_lineage
--- Where every derived number comes from, read from the catalog: one row per view,
--- materialized view or live view and each table or view it reads. Materialized and
--- live views name their base table; a plain view's sources are the names in its SQL.
--- Say: the dashboard's blotter reads ledger, marks_live and usd_factor_asof; follow them
--- here down to fills, position_snapshots, curve_marks, quotes and instruments.
--- Views: lineage. Catalog metadata, so no time bound.
-SELECT kind, object, reads, status FROM energy_lineage ORDER BY kind, object, reads;
-
--- @@ 0g_impact
--- What a change to one table touches: the views that read it, and the views that read
--- those. Say: before changing how marks are stored, these are the definitions to
--- review, and the dashboard panels on marks_live and marks_asof move with them.
--- Views: lineage.
-DECLARE @source := 'energy_curve_marks'
-SELECT l1.reads AS source, l1.object AS read_by, l1.kind AS read_by_kind,
-       l2.object AS then_read_by, l2.kind AS then_read_by_kind
-FROM energy_lineage l1
-LEFT JOIN energy_lineage l2 ON l2.reads = l1.object
-WHERE l1.reads = @source
-ORDER BY read_by, then_read_by;
-
--- @@ 0h_freshness
--- How far each stored derivation trails its source. Materialized views: transactions
--- of the base table not yet folded in, and when the last refresh finished (the daily
--- bars refresh on a timer, so they trail by design). Live views: transactions and
--- seconds behind. Say: a stale or invalid view shows here before it shows in a report.
-SELECT 'materialized view' AS kind, view_name AS object, base_table_name AS reads, view_status AS status,
-       base_table_txn - refresh_base_table_txn AS txns_behind,
-       last_refresh_finish_timestamp AS last_refresh, NULL::double AS seconds_behind
-FROM materialized_views() WHERE view_name LIKE 'energy_%'
-UNION ALL
-SELECT 'live view', view_name, base_table_name, view_status, lag_seqtxn,
-       NULL::timestamp, lag_micros / 1e6
-FROM live_views() WHERE view_name LIKE 'energy_%'
-ORDER BY kind, object;
 
 -- =====================================================================================
 -- ACT 1 · INTRADAY PnL
@@ -1556,3 +1519,46 @@ LEFT JOIN marks mk ON mk.ts = k.ts AND mk.symbol = k.symbol
 LEFT JOIN graded g ON g.ts = k.ts AND g.symbol = k.symbol
 ORDER BY k.ts, k.symbol;
 
+-- =====================================================================================
+-- ACT 8 · LINEAGE AND GOVERNANCE
+-- Where every derived number comes from, what a change to a table would touch, and
+-- whether the stored derivations are current, all read from QuestDB's own catalog.
+-- Catalog metadata, not time series: these cells carry no time bound.
+-- =====================================================================================
+
+-- @@ 8a_lineage
+-- Where every derived number comes from, read from the catalog: one row per view,
+-- materialized view or live view and each table or view it reads. Materialized and
+-- live views name their base table; a plain view's sources are the names in its SQL.
+-- Say: the dashboard's blotter reads ledger, marks_live and usd_factor_asof; follow them
+-- here down to fills, position_snapshots, curve_marks, quotes and instruments.
+-- Views: lineage.
+SELECT kind, object, reads, status FROM energy_lineage ORDER BY kind, object, reads;
+
+-- @@ 8b_impact
+-- What a change to one table touches: the views that read it, and the views that read
+-- those. Say: before changing how marks are stored, these are the definitions to
+-- review, and the dashboard panels on marks_live and marks_asof move with them.
+-- Views: lineage.
+DECLARE @source := 'energy_curve_marks'
+SELECT l1.reads AS source, l1.object AS read_by, l1.kind AS read_by_kind,
+       l2.object AS then_read_by, l2.kind AS then_read_by_kind
+FROM energy_lineage l1
+LEFT JOIN energy_lineage l2 ON l2.reads = l1.object
+WHERE l1.reads = @source
+ORDER BY read_by, then_read_by;
+
+-- @@ 8c_freshness
+-- How far each stored derivation trails its source. Materialized views: transactions
+-- of the base table not yet folded in, and when the last refresh finished (the daily
+-- bars refresh on a timer, so they trail by design). Live views: transactions and
+-- seconds behind. Say: a stale or invalid view shows here before it shows in a report.
+SELECT 'materialized view' AS kind, view_name AS object, base_table_name AS reads, view_status AS status,
+       base_table_txn - refresh_base_table_txn AS txns_behind,
+       last_refresh_finish_timestamp AS last_refresh, NULL::double AS seconds_behind
+FROM materialized_views() WHERE view_name LIKE 'energy_%'
+UNION ALL
+SELECT 'live view', view_name, base_table_name, view_status, lag_seqtxn,
+       NULL::timestamp, lag_micros / 1e6
+FROM live_views() WHERE view_name LIKE 'energy_%'
+ORDER BY kind, object;

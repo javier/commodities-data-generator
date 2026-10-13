@@ -20,7 +20,7 @@ act something to find. Everything is generic: no real desk, no real names.
 | File | What it is |
 |---|---|
 | `energy_trading_data_generator.py` | The generator. Creates every table and view in code, backfills history with several workers, then streams in real time |
-| `energy_demo_queries.sql` | The query pack: seven acts, one cell per analytic, with presenter notes |
+| `energy_demo_queries.sql` | The query pack: eight acts, one cell per analytic, with presenter notes |
 | `check.py` | Smoke test: runs every cell and prints `ok` with row count and timing, or `FAIL`; `--dump` and `--compare` check a change against a saved run |
 | `energy_backfill.sh`, `energy_realtime.sh` | Local runners (QuestDB OSS on `127.0.0.1:9000`) |
 | `energy_enterprise_backfill.sh`, `energy_enterprise_realtime.sh` | Cluster runners (QWP over TLS, token auth, VPC-internal endpoints) |
@@ -496,8 +496,8 @@ that appear as whole words in its SQL (`views()`): every character that cannot b
 a name becomes a space, and `strpos` looks for `' ' || name || ' '`, so `energy_quotes`
 does not match inside `energy_quotes_1m`. The lineage is table to table, not column to
 column, and the dashboards' own SQL lives in Grafana and the notebook, not in the catalog;
-both read these views, so a panel traces back through them. `0f_lineage`, `0g_impact` and
-`0h_freshness` read it.
+both read these views, so a panel traces back through them. Act 8 of the query pack
+(`8a_lineage`, `8b_impact`, `8c_freshness`) reads it.
 
 ## The query pack, act by act
 
@@ -514,9 +514,7 @@ drill-down sibling right below them.
    delivery and lot, from the `energy_instrument_master` view. `0d_listing_lookup` the
    other way round: paste an exchange symbol (`G3BM 2026-11`) and get the instrument
    behind it and that venue's latest quote. `0e_definitions` the views every cell stands
-   on. `0f_lineage` every derived object and what it reads, `0g_impact` what reads a given
-   table directly and one level further (by default `curve_marks`), `0h_freshness` how
-   far each materialized and live view trails its source, with its status.
+   on.
 1. **Intraday PnL.** `1a` PnL by book in USD: the opening book revalued from settlement
    against today's trading, one GROUP BY over the `ledger` view; `1a_pnl_by_book_by_symbol`
    the same per contract. `1b` the PnL curve with drawdown on a 5-minute grid from the
@@ -573,6 +571,10 @@ drill-down sibling right below them.
    dual-listed front months: primary and EEX tick counts, the mark's source and venue,
    and whether the model was graded. EEX goes to zero for three minutes; marks and
    grading carry on from the primary.
+8. **Lineage and governance.** `8a_lineage` every view, materialized view and live view
+   and what it reads, from the `energy_lineage` view. `8b_impact` what reads a given table
+   directly and one level further (by default `curve_marks`). `8c_freshness` how far each
+   materialized and live view trails its source, with its status.
 
 ### QuestDB notes from building this
 
