@@ -1338,6 +1338,27 @@ def ensure_tables_and_views(args, prefix: str):
                         AND m.delivery_start >= s.delivery_start AND m.delivery_end <= s.delivery_end
                 WHERE s.granularity IN ('Q', 'S', 'Y')
                 GROUP BY s.ts, s.symbol, s.source, s.marked_by, s.price""")
+            # Lineage, from the catalog: one row per derived object and each table
+            # or view it reads. Materialized and live views name their base table;
+            # a plain view's sources are the dataset names that appear as whole
+            # words in its SQL (every character that cannot be part of a name
+            # becomes a space, so energy_quotes does not match energy_quotes_1m).
+            # Catalog metadata, not time series: no time bound.
+            view("lineage", f"""
+            WITH plain AS (
+              SELECT view_name, view_status, ' ' || regexp_replace(view_sql, '[^A-Za-z0-9_]', ' ') || ' ' AS words
+              FROM views() WHERE view_name LIKE '{prefix}%'
+            )
+            SELECT 'view' AS kind, p.view_name AS object, o.table_name AS reads, p.view_status AS status
+            FROM plain p CROSS JOIN tables() o
+            WHERE o.table_name LIKE '{prefix}%' AND o.table_name != p.view_name
+              AND strpos(p.words, ' ' || o.table_name || ' ') > 0
+            UNION ALL
+            SELECT 'materialized view', view_name, base_table_name, view_status
+            FROM materialized_views() WHERE view_name LIKE '{prefix}%'
+            UNION ALL
+            SELECT 'live view', view_name, base_table_name, view_status
+            FROM live_views() WHERE view_name LIKE '{prefix}%'""")
             if created:
                 print(f"[DDL] Views ready: {', '.join(created)}", flush=True)
 

@@ -28,7 +28,7 @@ import energy_trading_data_generator as gen  # noqa: E402
 
 # Drop order: dependents before what they read.
 LIVE_VIEWS = ["positions_live", "positions_live_by_venue"]
-PLAIN_VIEWS = ["instrument_master", "tenors", "curve_marks_latest", "trade_events_latest", "model_graded_day",
+PLAIN_VIEWS = ["lineage", "instrument_master", "tenors", "curve_marks_latest", "trade_events_latest", "model_graded_day",
                "marks_live", "usd_factor_asof", "strip_gaps_day", "mid_1m_day", "positions_running_day",
                "tenors_asof", "marks_asof", "fx_asof", "book_asof", "book_restated", "ledger"]
 MATERIALIZED_VIEWS = ["quotes_1d", "quotes_5m", "quotes_1m", "quotes_10s", "curve_marks_1h"]

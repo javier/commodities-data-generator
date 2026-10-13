@@ -455,7 +455,8 @@ agree within one quoted spread on the liquid front months.
 Without parameters: `energy_ledger` (opening book as a pseudo-fill plus today's fills),
 `energy_tenors` and `energy_curve_marks_latest` and `energy_trade_events_latest` (the
 `_asof` and `book_restated` views at their defaults), `energy_instrument_master` (one
-row per listing).
+row per listing), `energy_lineage` (one row per view, materialized view or live view and
+each table or view it reads).
 
 A cell overrides a parameter with its own leading `DECLARE`, and every view it touches
 follows, nested ones included:
@@ -488,6 +489,16 @@ WHERE booked_ts <= @asof
 
 `0e_definitions` lists every view with its status.
 
+**Lineage, in SQL.** `energy_lineage` reads QuestDB's catalog, so where any derived number
+comes from is a query away. Materialized and live views name their base table
+(`materialized_views()`, `live_views()`); a plain view's sources are the dataset names
+that appear as whole words in its SQL (`views()`): every character that cannot be part of
+a name becomes a space, and `strpos` looks for `' ' || name || ' '`, so `energy_quotes`
+does not match inside `energy_quotes_1m`. The lineage is table to table, not column to
+column, and the dashboards' own SQL lives in Grafana and the notebook, not in the catalog;
+both read these views, so a panel traces back through them. `0f_lineage`, `0g_impact` and
+`0h_freshness` read it.
+
 ## The query pack, act by act
 
 Every cell runs on its own. `DECLARE @name := ...` at the top of a cell holds the demo
@@ -503,7 +514,9 @@ drill-down sibling right below them.
    delivery and lot, from the `energy_instrument_master` view. `0d_listing_lookup` the
    other way round: paste an exchange symbol (`G3BM 2026-11`) and get the instrument
    behind it and that venue's latest quote. `0e_definitions` the views every cell stands
-   on.
+   on. `0f_lineage` every derived object and what it reads, `0g_impact` what reads a given
+   table directly and one level further (by default `curve_marks`), `0h_freshness` how
+   far each materialized and live view trails its source, with its status.
 1. **Intraday PnL.** `1a` PnL by book in USD: the opening book revalued from settlement
    against today's trading, one GROUP BY over the `ledger` view; `1a_pnl_by_book_by_symbol`
    the same per contract. `1b` the PnL curve with drawdown on a 5-minute grid from the
