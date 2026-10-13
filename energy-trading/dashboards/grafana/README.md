@@ -66,9 +66,13 @@ the two agree within one quoted spread on every liquid front month; between minu
 
 **Panel interval.** The PnL curve and the curve evolution sample on `$__sampleByInterval`,
 with a minimum interval of 10 s, from `quotes_10s` (10-second bars on the primary listing).
-At "Last 6 hours" the PnL curve's buckets are about 20 seconds; at 30 minutes they reach
-the 10-second floor. The curve evolution caps itself at 200 columns, so at 6 hours a column
-is about two minutes and at 30 minutes it is 10 seconds.
+The PnL curve caps itself at 360 points, so at "Last 6 hours" a bucket is one minute and
+at one hour or less it is the 10-second floor. The cap is what keeps it fast: the query
+joins every book and contract to its mark and FX rate in every bucket, so its cost grows
+with the number of buckets, not with the data scanned (on the Enterprise cluster at 6
+hours, about 230 ms with one-minute buckets against 550 ms with 20-second ones). The curve
+evolution caps itself at 200 columns, so at 6 hours a column is about two minutes and at
+30 minutes it is 10 seconds.
 
 ## Panels
 

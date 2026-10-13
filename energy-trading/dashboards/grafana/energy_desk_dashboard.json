@@ -280,7 +280,8 @@
           "mode": "multi",
           "sort": "desc"
         }
-      }
+      },
+      "maxDataPoints": 360
     },
     {
       "id": 8,
