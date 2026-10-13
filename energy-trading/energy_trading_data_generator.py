@@ -2854,7 +2854,11 @@ def update_demo_sql(path, values):
 def demo_variables(mkt: MarketModel, story: StoryClock, end_ns: int) -> dict:
     """The demo day and the front-month symbols. The pack's other times (@asof, @t1,
     @t2, the repricing, the outage) are offsets from @demo_day, so they follow it."""
-    nth = lambda c, g, k=0: mkt.sym[sorted(np.where((mkt.curve == c) & (mkt.gran == g))[0], key=lambda i: mkt.dstart[i])[k]]
+    # Front months as of the demo day: the contract list starts at the beginning of
+    # the backfill, so a contract that expired since (gasoil's front month) is skipped.
+    live = np.array([pd.Timestamp(e).value // NS > story.day_start for e in mkt.inst.expiry])
+    nth = lambda c, g, k=0: mkt.sym[sorted(np.where((mkt.curve == c) & (mkt.gran == g) & live)[0],
+                                           key=lambda i: mkt.dstart[i])[k]]
     return {
         "demo_day": story.demo_day.isoformat(),
         "brent": nth("BRENT", "M"), "wti": nth("WTI", "M"), "gasoil": nth("GASOIL", "M"),

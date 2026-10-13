@@ -520,7 +520,8 @@ drill-down sibling right below them.
    delivery and lot, from the `energy_instrument_master` view. `0d_listing_lookup` the
    other way round: paste an exchange symbol (`G3BM 2026-11`) and get the instrument
    behind it and that venue's latest quote. `0e_definitions` the views every cell stands
-   on.
+   on. `0f_symbols_for_the_day` the contract each symbol variable of the pack (`@ttf`,
+   `@brent`, ...) should hold on a given day, for moving a cell to another day.
 1. **Intraday PnL.** `1a` PnL by book in USD: the opening book revalued from settlement
    against today's trading, one GROUP BY over the `ledger` view; `1a_pnl_by_book_by_symbol`
    the same per contract. `1b` the PnL curve with drawdown on a 5-minute grid from the
