@@ -10,3 +10,5 @@ __pycache__/
 dist/
 build/
 .venv/
+# Generator state between a backfill and the real-time run that follows it.
+*.pkl
