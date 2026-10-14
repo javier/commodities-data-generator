@@ -3378,6 +3378,14 @@ def main():
               f"before writing.", flush=True)
         time.sleep(wait_s)
         start_ns = max(now_ns() // NS * NS + 2 * NS, latest + 1_000)
+    # A start ahead of the clock (data written into the future, say by a backfill
+    # with a later --end_ts): wait before connecting, so no connection sits idle
+    # while the clock catches up. Real-time writes two seconds ahead of the clock.
+    lead_ns = start_ns - (now_ns() + 2 * NS)
+    if lead_ns > NS:
+        print(f"[INFO] Real-time continues from {ns_to_iso(start_ns)}, ahead of the clock: waiting "
+              f"{lead_ns / NS:.1f} s before connecting.", flush=True)
+        time.sleep(lead_ns / NS)
     if args.demo_day:
         demo_day = datetime.date.fromisoformat(args.demo_day)
     elif state is not None:
