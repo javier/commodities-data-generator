@@ -12,7 +12,7 @@
     "from": "now-6h",
     "to": "now"
   },
-  "refresh": "5s",
+  "refresh": "500ms",
   "timepicker": {
     "refresh_intervals": [
       "250ms",
@@ -51,8 +51,8 @@
           "type": "questdb-questdb-datasource",
           "uid": "${DS_QUESTDB}"
         },
-        "enable": true,
-        "hide": true,
+        "enable": false,
+        "hide": false,
         "iconColor": "#FF9830",
         "target": {
           "refId": "Anno",
@@ -280,7 +280,8 @@
           "mode": "multi",
           "sort": "desc"
         }
-      }
+      },
+      "maxDataPoints": 360
     },
     {
       "id": 8,
@@ -1740,7 +1741,7 @@
             "type": "questdb-questdb-datasource",
             "uid": "${DS_QUESTDB}"
           },
-          "rawSql": "DECLARE @t1 := '${__from:date:iso}', @t2 := '${__to:date:iso}'\nWITH b1 AS (\n  (SELECT * FROM ${prefix}trade_events\n   WHERE booked_ts >= timestamp_floor('d', @t1::timestamp) AND booked_ts <= @t1\n   LATEST ON booked_ts PARTITION BY trade_id)\n  WHERE status != 'CANCELLED' AND trade_ts >= timestamp_floor('d', @t1::timestamp) AND trade_ts <= @t1\n    AND book IN (${book:singlequote})\n),\nb2 AS (\n  (SELECT * FROM ${prefix}trade_events\n   WHERE booked_ts >= timestamp_floor('d', @t1::timestamp) AND booked_ts <= @t2\n   LATEST ON booked_ts PARTITION BY trade_id)\n  WHERE status != 'CANCELLED' AND trade_ts >= timestamp_floor('d', @t1::timestamp) AND trade_ts <= @t2\n    AND book IN (${book:singlequote})\n),\nboth AS (\n  SELECT coalesce(b1.symbol, b2.symbol) AS symbol,\n         b1.qty AS q1, b1.px AS p1, b2.qty AS q2, b2.px AS p2, b2.trade_ts AS ts2\n  FROM b1 FULL JOIN b2 ON b1.trade_id = b2.trade_id\n),\nm1 AS (SELECT symbol, price FROM ${prefix}curve_marks WHERE ts <= @t1 AND ts > dateadd('m', -5, @t1) LATEST ON ts PARTITION BY symbol),\nm2 AS (SELECT symbol, price FROM ${prefix}curve_marks WHERE ts <= @t2 AND ts > dateadd('m', -5, @t2) LATEST ON ts PARTITION BY symbol),\nf1 AS (SELECT symbol, mid(bid, ask) AS usd FROM ${prefix}quotes\n       WHERE symbol IN ('EURUSD', 'GBPUSD', 'EURGBP') AND ts <= @t1 AND ts > dateadd('h', -1, @t1) LATEST ON ts PARTITION BY symbol),\nf2 AS (SELECT symbol, mid(bid, ask) AS usd FROM ${prefix}quotes\n       WHERE symbol IN ('EURUSD', 'GBPUSD', 'EURGBP') AND ts <= @t2 AND ts > dateadd('h', -1, @t2) LATEST ON ts PARTITION BY symbol),\nx AS (\n  SELECT t.q1, t.p1, t.q2, t.p2, t.ts2, a.price AS m1, b.price AS m2,\n         c.px_factor * coalesce(u1.usd, 1.0) AS k1, c.px_factor * coalesce(u2.usd, 1.0) AS k2\n  FROM both t\n  JOIN m1 a ON a.symbol = t.symbol\n  JOIN m2 b ON b.symbol = t.symbol\n  JOIN ${prefix}instruments c ON c.symbol = t.symbol\n  LEFT JOIN f1 u1 ON u1.symbol = c.fx_symbol\n  LEFT JOIN f2 u2 ON u2.symbol = c.fx_symbol\n),\ns AS (\n  SELECT sum(CASE WHEN q1 IS NOT NULL THEN q1 * ((m2 - p1) * k2 - (m1 - p1) * k1) ELSE 0 END)                       AS market_move,\n         sum(CASE WHEN q1 IS NULL AND ts2 > @t1 THEN q2 * (m2 - p2) * k2 ELSE 0 END)                              AS new_trades,\n         sum(CASE WHEN q1 IS NULL AND ts2 <= @t1 THEN q2 * (m2 - p2) * k2 ELSE 0 END)                             AS late_bookings,\n         sum(CASE WHEN q1 IS NOT NULL AND q2 IS NOT NULL THEN (q2 * (m2 - p2) - q1 * (m2 - p1)) * k2 ELSE 0 END)  AS amendments,\n         sum(CASE WHEN q2 IS NULL THEN -q1 * (m2 - p1) * k2 ELSE 0 END)                                           AS cancellations,\n         sum(CASE WHEN q2 IS NOT NULL THEN q2 * (m2 - p2) * k2 ELSE 0 END)\n           - sum(CASE WHEN q1 IS NOT NULL THEN q1 * (m1 - p1) * k1 ELSE 0 END)                                    AS total\n  FROM x\n)\nSELECT 'Market move' AS component, market_move AS usd FROM s\nUNION ALL SELECT 'New trades', new_trades FROM s\nUNION ALL SELECT 'Late bookings', late_bookings FROM s\nUNION ALL SELECT 'Amendments', amendments FROM s\nUNION ALL SELECT 'Cancellations', cancellations FROM s\nUNION ALL SELECT 'Total', total FROM s",
+          "rawSql": "DECLARE @t1 := '${__from:date:iso}', @t2 := '${__to:date:iso}'\nWITH b1 AS (\n  (SELECT * FROM ${prefix}trade_events\n   WHERE booked_ts >= timestamp_floor('d', @t1::timestamp) AND booked_ts <= @t1\n   LATEST ON booked_ts PARTITION BY trade_id)\n  WHERE status != 'CANCELLED' AND trade_ts >= timestamp_floor('d', @t1::timestamp) AND trade_ts <= @t1\n    AND book IN (${book:singlequote})\n),\nb2 AS (\n  (SELECT * FROM ${prefix}trade_events\n   WHERE booked_ts >= timestamp_floor('d', @t1::timestamp) AND booked_ts <= @t2\n   LATEST ON booked_ts PARTITION BY trade_id)\n  WHERE status != 'CANCELLED' AND trade_ts >= timestamp_floor('d', @t1::timestamp) AND trade_ts <= @t2\n    AND book IN (${book:singlequote})\n),\nboth AS (\n  SELECT coalesce(b1.symbol, b2.symbol) AS symbol,\n         b1.qty AS q1, b1.px AS p1, b2.qty AS q2, b2.px AS p2, b2.trade_ts AS ts2\n  FROM b1 FULL JOIN b2 ON b1.trade_id = b2.trade_id\n),\nm1 AS (SELECT symbol, price FROM ${prefix}curve_marks WHERE ts <= @t1 AND ts > dateadd('h', -1, @t1) LATEST ON ts PARTITION BY symbol),\nm2 AS (SELECT symbol, price FROM ${prefix}curve_marks WHERE ts <= @t2 AND ts > dateadd('h', -1, @t2) LATEST ON ts PARTITION BY symbol),\nf1 AS (SELECT symbol, mid(bid, ask) AS usd FROM ${prefix}quotes\n       WHERE symbol IN ('EURUSD', 'GBPUSD', 'EURGBP') AND ts <= @t1 AND ts > dateadd('h', -1, @t1) LATEST ON ts PARTITION BY symbol),\nf2 AS (SELECT symbol, mid(bid, ask) AS usd FROM ${prefix}quotes\n       WHERE symbol IN ('EURUSD', 'GBPUSD', 'EURGBP') AND ts <= @t2 AND ts > dateadd('h', -1, @t2) LATEST ON ts PARTITION BY symbol),\nx AS (\n  SELECT t.q1, t.p1, t.q2, t.p2, t.ts2, a.price AS m1, b.price AS m2,\n         c.px_factor * coalesce(u1.usd, 1.0) AS k1, c.px_factor * coalesce(u2.usd, 1.0) AS k2\n  FROM both t\n  JOIN m1 a ON a.symbol = t.symbol\n  JOIN m2 b ON b.symbol = t.symbol\n  JOIN ${prefix}instruments c ON c.symbol = t.symbol\n  LEFT JOIN f1 u1 ON u1.symbol = c.fx_symbol\n  LEFT JOIN f2 u2 ON u2.symbol = c.fx_symbol\n),\ns AS (\n  SELECT sum(CASE WHEN q1 IS NOT NULL THEN q1 * ((m2 - p1) * k2 - (m1 - p1) * k1) ELSE 0 END)                       AS market_move,\n         sum(CASE WHEN q1 IS NULL AND ts2 > @t1 THEN q2 * (m2 - p2) * k2 ELSE 0 END)                              AS new_trades,\n         sum(CASE WHEN q1 IS NULL AND ts2 <= @t1 THEN q2 * (m2 - p2) * k2 ELSE 0 END)                             AS late_bookings,\n         sum(CASE WHEN q1 IS NOT NULL AND q2 IS NOT NULL THEN (q2 * (m2 - p2) - q1 * (m2 - p1)) * k2 ELSE 0 END)  AS amendments,\n         sum(CASE WHEN q2 IS NULL THEN -q1 * (m2 - p1) * k2 ELSE 0 END)                                           AS cancellations,\n         sum(CASE WHEN q2 IS NOT NULL THEN q2 * (m2 - p2) * k2 ELSE 0 END)\n           - sum(CASE WHEN q1 IS NOT NULL THEN q1 * (m1 - p1) * k1 ELSE 0 END)                                    AS total\n  FROM x\n)\nSELECT 'Market move' AS component, market_move AS usd FROM s\nUNION ALL SELECT 'New trades', new_trades FROM s\nUNION ALL SELECT 'Late bookings', late_bookings FROM s\nUNION ALL SELECT 'Amendments', amendments FROM s\nUNION ALL SELECT 'Cancellations', cancellations FROM s\nUNION ALL SELECT 'Total', total FROM s",
           "format": 1,
           "queryType": "sql",
           "editorMode": "code",

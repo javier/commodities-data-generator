@@ -24,10 +24,11 @@ with plugin `questdb-questdb-datasource` 0.1.8, against QuestDB 10.0.2.
 The hidden `prefix` variable (`energy_`) is put in front of every table and view name;
 change it if the generator ran with a different `--prefix`.
 
-The refresh picker offers 250 ms, 500 ms and 750 ms as well as the usual intervals. Grafana
-only honours them when the server's `min_refresh_interval` is 250 ms or lower; its
-default is 5 s (`[dashboards] min_refresh_interval` in `grafana.ini`, or
-`GF_DASHBOARDS_MIN_REFRESH_INTERVAL=250ms` for a container).
+The dashboard refreshes every 500 ms by default, and the refresh picker offers 250 ms,
+500 ms and 750 ms as well as the usual intervals. Grafana only honours intervals below its
+server's `min_refresh_interval`, whose default is 5 s, and otherwise refreshes at that
+minimum: set it to 250 ms or lower (`[dashboards] min_refresh_interval` in `grafana.ini`,
+or `GF_DASHBOARDS_MIN_REFRESH_INTERVAL=250ms` for a container).
 
 The layout is checked on a 1920 px wide screen (1080p) and wider: every table fills its
 panel and shows all its columns without scrolling sideways. On a narrower screen the
@@ -66,9 +67,13 @@ the two agree within one quoted spread on every liquid front month; between minu
 
 **Panel interval.** The PnL curve and the curve evolution sample on `$__sampleByInterval`,
 with a minimum interval of 10 s, from `quotes_10s` (10-second bars on the primary listing).
-At "Last 6 hours" the PnL curve's buckets are about 20 seconds; at 30 minutes they reach
-the 10-second floor. The curve evolution caps itself at 200 columns, so at 6 hours a column
-is about two minutes and at 30 minutes it is 10 seconds.
+The PnL curve caps itself at 360 points, so at "Last 6 hours" a bucket is one minute and
+at one hour or less it is the 10-second floor. The cap is what keeps it fast: the query
+joins every book and contract to its mark and FX rate in every bucket, so its cost grows
+with the number of buckets, not with the data scanned (on the Enterprise cluster at 6
+hours, about 230 ms with one-minute buckets against 550 ms with 20-second ones). The curve
+evolution caps itself at 200 columns, so at 6 hours a column is about two minutes and at
+30 minutes it is 10 seconds.
 
 ## Panels
 
@@ -107,30 +112,32 @@ Notes on some of them:
   bookings. The lines meet at the right edge.
 - PnL explain splits the change in value of the day's deals between the range start and
   end into market move, new trades, late bookings, amendments and cancellations, which
-  add up to the total. Example, 12:00 to 15:00 on the demo day, all books (USD):
+  add up to the total. Example from a scale 1 dataset loaded before the storyline moved
+  to the morning, 12:00 to 15:00 on its demo day, all books (USD):
   market move -2,681,727, new trades 356,094, late bookings 157,946, amendments -730,544,
   cancellations -236,450; sum -3,134,681, the total.
 
-The planted events from `demo_events` appear as annotations on the time-series panels,
-with the act as the marker's tag. It is one query, and its toggle is hidden from the
-controls bar, on purpose: Grafana re-runs annotation queries on every refresh and a
-visible toggle shows a loading spinner each time, while the variables (`book`, `curve`,
-the datasource) refresh only when the dashboard loads. To switch the markers off, use
-Dashboard settings > Annotations > "Planted events".
+The planted events from `demo_events` can be shown as annotations on the time-series
+panels, with the act as the marker's tag: the "Planted events" toggle in the controls
+bar. It is off by default. Grafana re-runs annotation queries on every refresh and
+redraws the markers each time, so at 1-second refresh they blink; switched off, the
+query does not run at all. Switch it on with the refresh paused, for the reconstruction
+(the variables, `book`, `curve` and the datasource, refresh only when the dashboard
+loads).
 
 ## The two demo moves
 
-1. **Live.** Range "Last 6 hours", refresh 1 s, with `energy_realtime.sh` running. The
-   front months tick on every refresh, the blotter's marks and PnL move with the market,
-   the limits move with every fill, the PnL lines' last segment moves within seconds, and
-   the curve evolution adds a column on its interval.
-2. **Reconstruction.** Pause the refresh and set the range to 12:00 to 14:00 UTC on the
-   demo day. The blotter and the limits show the desk as of 14:00; the as-known line
-   steps at 13:20, when the LNG fill booked with ten times its quantity at 10:05 is
-   corrected, and PnL explain carries that correction under amendments. Then move the range end to 14:35:
-   the duplicate TTF quarter cancelled at 14:05 lands under cancellations, and the UK
-   power season dealt at 09:10 and booked at 14:30 lands under late bookings and in the
-   restated line.
+1. **Live.** Range "Last 6 hours", the default 500 ms refresh, with `energy_realtime.sh`
+   running. The front months tick on every refresh, the blotter's marks and PnL move with
+   the market, the limits move with every fill, the PnL lines' last segment moves within
+   seconds, and the curve evolution adds a column on its interval.
+2. **Reconstruction.** Pause the refresh, switch on "Planted events", and set the range
+   to 09:30 to 10:50 UTC on the demo day. The blotter and the limits show the desk as of
+   10:50; the as-known line steps at 10:45, when the LNG fill booked with ten times its
+   quantity at 09:00 is corrected, and PnL explain carries that correction under
+   amendments. Then move the range end to 11:20: the duplicate TTF quarter cancelled at
+   11:00 lands under cancellations, and the UK power season dealt at 07:30 and booked at
+   11:15 lands under late bookings and in the restated line.
 
 A cancellation or amendment shows in PnL explain only when the trade existed at the range
 start: a deal booked and cancelled inside the range was never in the opening book.
