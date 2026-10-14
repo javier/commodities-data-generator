@@ -139,7 +139,7 @@ workers mostly buys O3 merge work, not speed.
 --demo_day              YYYY-MM-DD the storyline is planted on; default the end day
 --scale_factor          multiplies every tick and fill rate; floats allowed
 --processes             workers; default 3
---incremental true      skip what the database already holds (resume an interrupted run)
+--incremental true      real-time: continue from the state file (backfill never overlaps either way)
 --tables a,b,c          create and populate only these base tables
 --create_views / --create_live_view / --create_plain_views   default true
 --parquet_encodings false   plain column types for a server that rejects PARQUET(...)
@@ -159,6 +159,13 @@ in European hours, 10% at night); the load took about two minutes on a laptop wi
 workers. Fill counts scale with the same factor. The
 Enterprise runner defaults to 0.5 for the gp3 volume.
 
+A backfill never writes over data that is already there. It first reads the latest
+timestamp in `quotes`, `curve_marks`, `fills` and `trade_events`: if that reaches the end of
+the window it writes nothing and says so; if it falls inside the window it backfills only
+from the next minute on. Prices and positions are simulated afresh, so they jump at that
+point; to continue seamlessly, run real-time with `--incremental true` instead, which
+catches up from the state file. To reload a window, wipe it first with `energy_wipe.py`.
+
 ### Real-time: `--mode real-time`
 
 Single process, 250 ms slices (`--realtime_slice_ms`), timestamps two seconds ahead of
@@ -173,7 +180,9 @@ since the backfill or the last run (gasoil's front month, say) has gone to deliv
 leaves the book, and the log names it. Anchors are
 refreshed from Yahoo every `--yahoo_refresh_secs` (default 300) and the front months are
 pulled gently towards them (two-hour half-life). `--end_ts` stops it; so does Ctrl-C,
-which saves the state file.
+which saves the state file. With `--incremental false` it starts from the clock, but never
+before the latest data: if the tables hold rows ahead of the clock (real-time writes two
+seconds ahead), it waits until the clock has passed them.
 
 ### Starting over: `energy_wipe.py`
 

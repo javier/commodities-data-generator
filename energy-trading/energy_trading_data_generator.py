@@ -1363,6 +1363,20 @@ def ensure_tables_and_views(args, prefix: str):
                 print(f"[DDL] Views ready: {', '.join(created)}", flush=True)
 
 
+# Tables whose latest timestamp marks where existing data ends: nothing is ever
+# written before it, so a run over a window that is already loaded adds only what
+# comes after (wipe with energy_wipe.py to reload a window).
+RESUME_TABLES = ("quotes", "curve_marks", "fills", "trade_events")
+
+
+def latest_data_ns(conn, args) -> Optional[int]:
+    """Latest designated timestamp across RESUME_TABLES, or None on empty tables."""
+    latest = [get_latest_timestamp_ns(conn, table_name(t, args.prefix), TABLE_TS[t])
+              for t in RESUME_TABLES if t in args.table_set]
+    latest = [x for x in latest if x is not None]
+    return max(latest) if latest else None
+
+
 def get_latest_timestamp_ns(conn, table: str, ts_col: str = "ts"):
     """Latest designated timestamp in `table`, as epoch nanoseconds, or None.
     A missing table is not an error: on a fresh database there is nothing to
@@ -3023,9 +3037,12 @@ def write_static_rows(args, mkt: MarketModel, planner: DeskPlanner, gen: SpanGen
     """Reference data and the cheat sheet, plus the first day's day-ahead
     prices (published before the window opened, so no slice owns them).
     Reference rows are stamped with the time they are written and inserted only
-    when new, so repeated runs never duplicate them."""
+    when new, so repeated runs never duplicate them. Over existing data nothing
+    goes before its latest timestamp: earlier planted events are skipped, and so
+    is the first day's day-ahead, which the run that loaded that day published."""
     now_ns = time.time_ns()
     with connect_qwp(args, sender_id=sender_tag(args, "static"), auto_flush_interval=1000) as db, db.sender() as sender:
+        floor_ns = latest_data_ns(db, args)
         emitter = SortedEmitter(sender, args.prefix, args.table_set, 1_000_000)
         added = {}
         for table, df, keys in (("instruments", instruments_df(mkt.inst, now_ns), ["symbol"]),
@@ -3034,13 +3051,17 @@ def write_static_rows(args, mkt: MarketModel, planner: DeskPlanner, gen: SpanGen
             new = new_reference_rows(db, args, table, df, keys)
             added[table] = len(new)
             emitter.emit(table, new)
-        emitter.emit("demo_events", demo_events_df(planner.demo_events))
-        day_sec = start_ns // NS - (start_ns // NS) % 86400
-        emitter.emit("da_prices", gen.day_ahead(day_sec, day_sec - 86400 + 12 * 3600 + 2700))
+        events = demo_events_df(planner.demo_events)
+        if floor_ns is not None:
+            events = events[events.ts > floor_ns]
+        emitter.emit("demo_events", events)
+        if floor_ns is None:
+            day_sec = start_ns // NS - (start_ns // NS) % 86400
+            emitter.emit("da_prices", gen.day_ahead(day_sec, day_sec - 86400 + 12 * 3600 + 2700))
         emitter.flush_all()
         sender.flush(wait=True)
-    print(f"[INFO] Static rows written: new reference rows {added}, demo_events, day-ahead for the first day.",
-          flush=True)
+    print(f"[INFO] Static rows written: new reference rows {added}, {len(events)} planted events"
+          f"{'' if floor_ns is not None else ', day-ahead for the first day'}.", flush=True)
 
 
 def hour_slices(start_ns: int, end_ns: int):
@@ -3252,8 +3273,8 @@ def main():
                         "by this percentage at the front, damped along the curve. The champion model never adapts.")
 
     p.add_argument("--incremental", type=bool_arg, default=False,
-                   help="Backfill: skip what the database already holds. Real-time: resume from the state file "
-                        "or, failing that, from the database.")
+                   help="Real-time: resume from the state file or, failing that, from the database. A run "
+                        "never writes before the latest data, with or without it.")
     p.add_argument("--create_views", type=bool_arg, default=True, help="Materialized views.")
     p.add_argument("--create_live_view", type=bool_arg, default=True, help="The positions live view (beta).")
     p.add_argument("--create_plain_views", type=bool_arg, default=True, help="Plain views: ledger, tenors, instrument_master, lineage and the parameterised *_asof and *_day views.")
@@ -3307,18 +3328,23 @@ def main():
         if start_ns >= end_ns:
             print("ERROR: start_ts must be before end_ts.")
             sys.exit(1)
+        # Never write before the latest data, whatever --incremental says.
         resume_from = None
-        if args.incremental:
-            with connect_qwp(args) as conn:
-                latest = [get_latest_timestamp_ns(conn, table_name(t, prefix), TABLE_TS[t])
-                          for t in ("quotes", "curve_marks", "fills") if t in args.table_set]
-            latest = [x for x in latest if x is not None]
-            if latest:
-                resume_from = max(latest) + 1
-                print(f"[INFO] Incremental: resuming generation from {ns_to_iso(resume_from)}.", flush=True)
-                if resume_from >= end_ns:
-                    print("[INFO] Nothing to do: the database already covers the window.")
-                    sys.exit(0)
+        with connect_qwp(args) as conn:
+            latest = latest_data_ns(conn, args)
+        if latest is not None:
+            # The backfill works in whole minutes: resume at the minute after the latest row.
+            next_min = -(-(latest + 1) // MINUTE_NS) * MINUTE_NS
+            if next_min >= end_ns:
+                print(f"[INFO] Nothing to do: the tables already hold data up to {ns_to_iso(latest)}, "
+                      f"at or after the end of the window. Wipe with energy_wipe.py to reload it.", flush=True)
+                sys.exit(0)
+            if next_min > start_ns:
+                resume_from = next_min
+                print(f"[INFO] The tables already hold data up to {ns_to_iso(latest)}: writing from "
+                      f"{ns_to_iso(resume_from)} only. Prices and positions are simulated afresh, so they "
+                      f"jump at that point; real-time with --incremental true continues from the state "
+                      f"file instead.", flush=True)
         story = StoryClock(demo_day)
         anchors = fetch_anchors(args.static_anchors)
         print(f"[INFO] Backfill {ns_to_iso(start_ns)} -> {ns_to_iso(end_ns)}, demo day {demo_day}, "
@@ -3335,18 +3361,23 @@ def main():
         if state.get("seed") != args.seed:
             print(f"[WARN] State file seed {state.get('seed')} differs from --seed {args.seed}; using the file's path anyway.")
     start_ns = now + 2 * NS
+    with connect_qwp(args) as conn:
+        latest = latest_data_ns(conn, args)
     if args.incremental:
-        with connect_qwp(args) as conn:
-            latest = [get_latest_timestamp_ns(conn, table_name(t, prefix), TABLE_TS[t])
-                      for t in ("quotes", "curve_marks") if t in args.table_set]
-        latest = [x for x in latest if x is not None]
-        if latest:
-            start_ns = max(latest) + 1_000
+        if latest is not None:
+            start_ns = latest + 1_000
             if state is not None:
                 start_ns = max(start_ns, state["t_last_ns"])
             print(f"[INFO] Incremental: continuing from {ns_to_iso(start_ns)}.", flush=True)
         elif state is not None:
             start_ns = state["t_last_ns"]
+    elif latest is not None and latest + 1_000 > start_ns:
+        # Never write before the latest data: wait until the clock passes it.
+        wait_s = (latest + 1_000 - start_ns) / NS
+        print(f"[INFO] The tables already hold data up to {ns_to_iso(latest)}: waiting {wait_s:.1f} s "
+              f"before writing.", flush=True)
+        time.sleep(wait_s)
+        start_ns = max(now_ns() // NS * NS + 2 * NS, latest + 1_000)
     if args.demo_day:
         demo_day = datetime.date.fromisoformat(args.demo_day)
     elif state is not None:
